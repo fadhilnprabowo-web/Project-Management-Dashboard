@@ -1,11 +1,38 @@
-import type {Store,Project,Row} from '../types';
-const key='pem-dashboard-v1';
-const blank=(id:string,projectId:string,values:any={}):Row=>({id,projectId,...values});
-function demo():Store{
- const id='demo-hospital';const approval={firstCompany:'PT Cipta Konstruksi',firstName:'R. Santoso',firstPosition:'Project Manager',firstSignature:'',secondCompany:'Nusantara General Hospital',secondName:'A. Pratama',secondPosition:'Project Engineer',secondSignature:''};
- const project:Project={id,name:'MOT & Medical Gas Installation – Demo Hospital',number:'PRJ-2026-014',client:'Nusantara General Hospital',location:'Jakarta, Indonesia',manager:'R. Santoso',engineer:'A. Pratama',contractor:'PT Cipta Konstruksi',consultant:'MedBuild Consultants',start:'2026-01-05',finish:'2026-12-18',value:18400000000,status:'On Going',description:'Medical gas and medical operation theatre installation works.',approval};
- const make=(arr:any[])=>arr.map((x,i)=>blank('d'+i,id,x));
- return {projects:[project],wbs:make([{code:'1.1',activity:'Site Survey',discipline:'General',unit:'LS',quantity:1,weight:3,start:'2026-01-05',finish:'2026-01-16',planned:100,actual:100,status:'Completed',pic:'Surveyor'},{code:'2.1',activity:'Shop Drawing',discipline:'Engineering',unit:'set',quantity:12,weight:8,start:'2026-01-19',finish:'2026-03-20',planned:100,actual:95,status:'In Progress',pic:'Engineering'},{code:'2.2',activity:'3D Modeling',discipline:'Engineering',unit:'set',quantity:8,weight:5,start:'2026-02-02',finish:'2026-03-27',planned:100,actual:100,status:'Completed',pic:'BIM Team'},{code:'2.3',activity:'Material Approval',discipline:'Procurement',unit:'item',quantity:24,weight:8,start:'2026-02-02',finish:'2026-04-10',planned:100,actual:75,status:'In Progress',pic:'Procurement'},{code:'3.1',activity:'Medical Gas Pipe Installation',discipline:'Medical Gas',unit:'m',quantity:1850,weight:18,start:'2026-03-16',finish:'2026-08-14',planned:72,actual:61,status:'In Progress',pic:'Piping Team'},{code:'3.2',activity:'Oxygen Pipeline',discipline:'Medical Gas',unit:'m',quantity:720,weight:10,planned:78,actual:68,status:'In Progress',pic:'Piping Team'},{code:'3.3',activity:'Vacuum Pipeline',discipline:'Medical Gas',unit:'m',quantity:540,weight:8,planned:65,actual:58,status:'In Progress',pic:'Piping Team'},{code:'4.1',activity:'Valve Box',discipline:'Medical Gas',unit:'pcs',quantity:32,weight:6,planned:50,actual:42,status:'In Progress',pic:'Installation Team'},{code:'4.2',activity:'Terminal Unit',discipline:'Medical Gas',unit:'pcs',quantity:110,weight:8,planned:38,actual:30,status:'In Progress',pic:'Installation Team'},{code:'5.1',activity:'Pressure Test',discipline:'Testing',unit:'system',quantity:1,weight:5,planned:0,actual:0,status:'Not Started',pic:'QA/QC'},{code:'5.2',activity:'Commissioning',discipline:'Testing',unit:'system',quantity:1,weight:6,planned:0,actual:0,status:'Not Started',pic:'QA/QC'},{code:'6.1',activity:'Final Inspection & BAST',discipline:'Handover',unit:'LS',quantity:1,weight:4,planned:0,actual:0,status:'Not Started',pic:'Project Team'}]),progress:make([{week:1,date:'2026-01-09',plannedWeekly:4,actualWeekly:3},{week:2,date:'2026-01-16',plannedWeekly:5,actualWeekly:4},{week:3,date:'2026-01-23',plannedWeekly:5,actualWeekly:4},{week:4,date:'2026-01-30',plannedWeekly:6,actualWeekly:5},{week:5,date:'2026-02-06',plannedWeekly:5,actualWeekly:5},{week:6,date:'2026-02-13',plannedWeekly:6,actualWeekly:5},{week:7,date:'2026-02-20',plannedWeekly:6,actualWeekly:5},{week:8,date:'2026-02-27',plannedWeekly:7,actualWeekly:6},{week:9,date:'2026-03-06',plannedWeekly:7,actualWeekly:6},{week:10,date:'2026-03-13',plannedWeekly:7,actualWeekly:7},{week:11,date:'2026-03-20',plannedWeekly:7,actualWeekly:6},{week:12,date:'2026-03-27',plannedWeekly:8,actualWeekly:6}]),activities:make([{activity:'Complete oxygen riser installation',wbs:'3.2',pic:'Piping Team',start:'2026-10-09',finish:'2026-10-30',status:'In Progress',priority:'High',progress:68},{activity:'Submit updated shop drawings',wbs:'2.1',pic:'Engineering',start:'2026-10-09',finish:'2026-10-16',status:'In Progress',priority:'Critical',progress:95},{activity:'Prepare pressure test package',wbs:'5.1',pic:'QA/QC',start:'2026-10-12',finish:'2026-10-23',status:'Not Started',priority:'Medium',progress:0},{activity:'Install ward terminal units',wbs:'4.2',pic:'Installation Team',start:'2026-10-12',finish:'2026-11-06',status:'In Progress',priority:'High',progress:30}]),issues:make([{issueId:'ISS-024',date:'2026-10-06',issue:'Late delivery of copper pipe',category:'Procurement',priority:'Critical',pic:'Procurement',target:'2026-10-14',status:'In Progress',description:'Supplier shipment is delayed one week.',action:'Expedite partial delivery'},{issueId:'ISS-023',date:'2026-10-04',issue:'Drawing coordination at ICU',category:'Engineering',priority:'High',pic:'Engineering',target:'2026-10-12',status:'Open',description:'Ceiling coordination conflict.'}]),materials:make([{material:'Medical copper pipe, Type K',specification:'ASTM B819, 22 mm',quantity:720,unit:'m',required:'2026-10-14',approval:'Approved',procurement:'In Procurement',delivery:'Partial',supplier:'PT Medika Teknik'},{material:'Bedhead terminal unit',specification:'O2 / VAC / AIR, 3-gas',quantity:110,unit:'pcs',required:'2026-10-28',approval:'Pending',procurement:'Ordered',delivery:'Not Delivered',supplier:'GasCare Indonesia'}]),settings:{dark:false,defaultProject:id}};
+import type { Store } from '../types'
+
+const settingsKey = (userId: string) => `pem-dashboard-settings:${userId}`
+
+export function emptyStore(): Store {
+  return {
+    projects: [],
+    wbs: [],
+    progress: [],
+    activities: [],
+    issues: [],
+    materials: [],
+    settings: { dark: false, defaultProject: '' },
+  }
 }
-export function load():Store{try{const v=localStorage.getItem(key);if(!v)return demo();const data=JSON.parse(v);delete data.leanTasks;return data}catch{return demo()}}
-export function save(s:Store){localStorage.setItem(key,JSON.stringify(s))}
+
+/** Only non-sensitive UI preferences are stored locally, isolated by auth user. */
+export function loadPreferences(userId: string): Partial<Store['settings']> {
+  try {
+    const raw = localStorage.getItem(settingsKey(userId))
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    return {
+      dark: Boolean(parsed.dark),
+      defaultProject: typeof parsed.defaultProject === 'string' ? parsed.defaultProject : '',
+    }
+  } catch {
+    return {}
+  }
+}
+
+export function savePreferences(userId: string, settings: Store['settings']) {
+  try {
+    localStorage.setItem(settingsKey(userId), JSON.stringify(settings))
+  } catch (error) {
+    console.error('PREFERENCE SAVE ERROR:', error)
+  }
+}

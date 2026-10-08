@@ -3,6 +3,13 @@ import type { Project, Row, Store } from '../types'
 
 const weeklyLinksMarker = '[[weekly-links]] '
 
+async function requireCurrentUserId() {
+  const { data, error } = await supabase.auth.getUser()
+  if (error) throw error
+  if (!data.user) throw new Error('Sesi pengguna tidak tersedia.')
+  return data.user.id
+}
+
 function readWeeklyLinks(notes: unknown) {
   const source = String(notes ?? '')
   const lines = source.split(/\r?\n/)
@@ -39,9 +46,12 @@ function writeWeeklyLinks(notes: unknown, row: Row) {
  */
 
 export async function getProjects(): Promise<Project[]> {
+  const userId = await requireCurrentUserId()
+
   const { data, error } = await supabase
     .from('projects')
     .select('*')
+    .eq('owner_id', userId)
     .order('created_at', { ascending: true })
 
   if (error) throw error
@@ -112,6 +122,7 @@ export async function insertProject(project: Project) {
 }
 
 export async function updateProject(project: Project) {
+  const userId = await requireCurrentUserId()
   const { data, error } = await supabase
     .from('projects')
     .update({
@@ -135,6 +146,7 @@ export async function updateProject(project: Project) {
       documentation: project.documentation ?? [],
     })
     .eq('id', project.id)
+    .eq('owner_id', userId)
     .select()
     .single()
 
@@ -144,10 +156,12 @@ export async function updateProject(project: Project) {
 }
 
 export async function deleteProject(id: string) {
+  const userId = await requireCurrentUserId()
   const { error } = await supabase
     .from('projects')
     .delete()
     .eq('id', id)
+    .eq('owner_id', userId)
 
   if (error) throw error
 }
@@ -174,6 +188,8 @@ export async function getWBS(projectId: string): Promise<Row[]> {
 
     code: x.wbs_code ?? '',
     activity: x.wbs_name ?? '',
+    parentId: x.parent_id ?? '',
+    description: x.description ?? '',
 
     discipline: x.discipline ?? '',
     unit: x.unit ?? '',
@@ -198,6 +214,7 @@ export async function insertWBS(row: Row) {
     .from('wbs')
     .insert({
       project_id: row.projectId,
+      parent_id: row.parentId || null,
 
       wbs_code: row.code || null,
       wbs_name: row.activity || '',
@@ -218,7 +235,7 @@ export async function insertWBS(row: Row) {
       pic: row.pic || null,
       notes: row.notes || null,
 
-      description: row.discipline || row.notes || null,
+      description: row.description || null,
     })
     .select()
     .single()
@@ -232,6 +249,7 @@ export async function updateWBS(row: Row) {
   const { data, error } = await supabase
     .from('wbs')
     .update({
+      parent_id: row.parentId || null,
       wbs_code: row.code || null,
       wbs_name: row.activity || '',
 
@@ -251,7 +269,7 @@ export async function updateWBS(row: Row) {
       pic: row.pic || null,
       notes: row.notes || null,
 
-      description: row.discipline || row.notes || null,
+      description: row.description || null,
     })
     .eq('id', row.id)
     .select()
@@ -634,6 +652,7 @@ export async function getMaterials(projectId: string): Promise<Row[]> {
     id: x.id,
     projectId: x.project_id,
 
+    materialCode: x.material_code ?? '',
     material: x.material_name ?? '',
     specification: x.specification ?? '',
     quantity: Number(x.planned_quantity ?? 0),
@@ -646,6 +665,7 @@ export async function getMaterials(projectId: string): Promise<Row[]> {
 
     supplier: x.supplier ?? '',
     notes: x.notes ?? '',
+    status: x.status ?? 'Planned',
   }))
 }
 
@@ -719,6 +739,91 @@ export async function deleteMaterial(id: string) {
     .eq('id', id)
 
   if (error) throw error
+}
+
+export type ImportTable = 'wbs' | 'activities' | 'progress' | 'issues' | 'materials'
+
+/** One insert request per sheet keeps a sheet atomic at the database statement level. */
+export async function insertRowsBatch(table: ImportTable, rows: Row[]) {
+  if (!rows.length) return []
+  const payload = rows.map(row => {
+    if (table === 'wbs') return {
+      project_id: row.projectId,
+      parent_id: row.parentId || null,
+      wbs_code: row.code || null,
+      wbs_name: row.activity || '',
+      description: row.description || row.discipline || row.notes || null,
+      discipline: row.discipline || null,
+      unit: row.unit || null,
+      quantity: Number(row.quantity || 0),
+      weight: Number(row.weight || 0),
+      start_date: row.start || null,
+      finish_date: row.finish || null,
+      planned_progress: Number(row.planned || 0),
+      actual_progress: Number(row.actual || 0),
+      status: row.status || 'Not Started',
+      pic: row.pic || null,
+      notes: row.notes || null,
+    }
+    if (table === 'activities') return {
+      project_id: row.projectId,
+      wbs_id: row.wbsId || null,
+      activity_code: row.activityCode || null,
+      activity_name: row.activity || '',
+      start_date: row.start || null,
+      finish_date: row.finish || null,
+      duration: Number(row.duration || 0),
+      weight: Number(row.weight || 0),
+      planned_progress: Number(row.planned || 0),
+      actual_progress: Number(row.actual || 0),
+      status: row.status || 'Not Started',
+      pic: row.pic || null,
+      notes: row.notes || null,
+    }
+    if (table === 'progress') return {
+      project_id: row.projectId,
+      week_number: Number(row.week),
+      week_start: row.weekStart || row.date || null,
+      week_end: row.weekEnd || row.date || null,
+      wbs_id: row.wbsIds?.[0] || row.wbsId || null,
+      activity_id: row.activityIds?.[0] || row.activityId || null,
+      planned_progress: Number(row.plannedWeekly),
+      actual_progress: Number(row.actualWeekly),
+      notes: writeWeeklyLinks(row.notes, row),
+    }
+    if (table === 'issues') return {
+      project_id: row.projectId,
+      issue_code: row.issueId || null,
+      reported_date: row.date || null,
+      issue_title: row.issue || '',
+      description: row.description || null,
+      category: row.category || null,
+      priority: row.priority || 'Medium',
+      assigned_to: row.pic || null,
+      due_date: row.target || null,
+      status: row.status || 'Open',
+      action: row.action || null,
+      notes: row.notes || null,
+    }
+    return {
+      project_id: row.projectId,
+      material_code: row.materialCode || null,
+      material_name: row.material || '',
+      specification: row.specification || null,
+      planned_quantity: Number(row.quantity || 0),
+      unit: row.unit || null,
+      required_date: row.required || null,
+      approval_status: row.approval || null,
+      procurement_status: row.procurement || null,
+      delivery_date: row.delivery || null,
+      supplier: row.supplier || null,
+      notes: row.notes || null,
+      status: row.status || 'Planned',
+    }
+  })
+  const { data, error } = await supabase.from(table).insert(payload).select('id')
+  if (error) throw error
+  return data ?? []
 }
 
 
@@ -1108,9 +1213,7 @@ export async function duplicateProjectWithData(
 export async function restoreBackupToSupabase(
   backup: Store
 ) {
-  if (!backup?.projects?.length) {
-    throw new Error('Backup tidak memiliki project.')
-  }
+  validateBackup(backup)
 
   /**
    * Restore projects
@@ -1475,6 +1578,47 @@ export async function restoreBackupToSupabase(
   }
 
   return true
+}
+
+export function validateBackup(backup: Store) {
+  if (!backup || !Array.isArray(backup.projects) || backup.projects.length === 0) {
+    throw new Error('Backup tidak memiliki daftar project yang valid.')
+  }
+  const collections: Array<[string, Row[] | undefined]> = [
+    ['WBS', backup.wbs], ['Activities', backup.activities], ['Weekly Progress', backup.progress],
+    ['Issues', backup.issues], ['Materials', backup.materials],
+  ]
+  for (const [name, rows] of collections) {
+    if (rows !== undefined && !Array.isArray(rows)) throw new Error(`Bagian ${name} pada backup harus berupa array.`)
+  }
+  if (backup.projects.some(project => !project || typeof project.id !== 'string' || !project.id)) {
+    throw new Error('Backup berisi project tanpa ID yang valid.')
+  }
+  const projectIds = new Set(backup.projects.map(project => project.id))
+  if (projectIds.size !== backup.projects.length) throw new Error('Backup memiliki project tanpa ID atau ID project duplikat.')
+  const assertRows = (name: string, rows: Row[] = []) => {
+    const ids = new Set<string>()
+    for (const row of rows) {
+      if (!row?.id || !row.projectId || !projectIds.has(row.projectId)) throw new Error(`${name}: setiap baris harus memiliki ID dan merujuk project di dalam backup.`)
+      if (ids.has(row.id)) throw new Error(`${name}: ID ${row.id} muncul lebih dari satu kali.`)
+      ids.add(row.id)
+    }
+  }
+  for (const [name, rows] of collections) assertRows(name, rows || [])
+  const wbsById = new Map((backup.wbs || []).map(row => [row.id, row]))
+  const activityById = new Map((backup.activities || []).map(row => [row.id, row]))
+  for (const row of backup.wbs || []) {
+    if (row.parentId && (!wbsById.has(row.parentId) || row.parentId === row.id || wbsById.get(row.parentId)?.projectId !== row.projectId)) throw new Error(`WBS ${row.code || row.id}: parent WBS tidak valid atau berbeda project.`)
+  }
+  for (const row of backup.activities || []) {
+    if (row.wbsId && wbsById.get(row.wbsId)?.projectId !== row.projectId) throw new Error(`Activity ${row.activity || row.id}: WBS tidak ditemukan pada project yang sama di backup.`)
+  }
+  for (const row of backup.progress || []) {
+    const linkedWbs = Array.isArray(row.wbsIds) ? row.wbsIds : row.wbsId ? [row.wbsId] : []
+    const linkedActivities = Array.isArray(row.activityIds) ? row.activityIds : row.activityId ? [row.activityId] : []
+    if (linkedWbs.some((id: string) => wbsById.get(id)?.projectId !== row.projectId)) throw new Error(`Weekly Progress minggu ${row.week}: ada WBS yang tidak ditemukan pada project yang sama di backup.`)
+    if (linkedActivities.some((id: string) => activityById.get(id)?.projectId !== row.projectId)) throw new Error(`Weekly Progress minggu ${row.week}: ada Activity yang tidak ditemukan pada project yang sama di backup.`)
+  }
 }
 
 

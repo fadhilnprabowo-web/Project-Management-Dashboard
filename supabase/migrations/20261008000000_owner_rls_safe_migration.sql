@@ -1,0 +1,58 @@
+-- TEMPLATE ONLY — NOT A RUNNABLE MIGRATION.
+-- BLOCKED until the live schema, existing policies, all project owner mappings,
+-- child foreign keys/delete behavior, and test plan have been reviewed.
+-- Every SQL statement below is intentionally commented out. Do not uncomment or
+-- execute phases as a batch. See supabase/audit/*.md and the audit query file.
+-- No data is deleted by this draft. No owner is guessed.
+
+-- ================================================================
+-- PHASE A — schema preparation (only after verifying public.projects/id)
+-- ================================================================
+-- alter table public.projects
+--   add column owner_id uuid references auth.users(id);
+-- alter table public.projects
+--   alter column owner_id set default auth.uid();
+-- create index projects_owner_id_idx on public.projects(owner_id);
+--
+-- Review existing columns/constraints/indexes first. If owner_id already exists,
+-- inspect its type, FK, default, values, and index instead of blindly adding.
+-- Keep owner_id nullable during this phase to preserve access to existing rows.
+
+-- ================================================================
+-- PHASE B — owner mapping / backfill (manual, per verified mapping only)
+-- ================================================================
+-- First audit rows with NULL owner_id and establish a trusted mapping from each
+-- project to an authenticated auth.users.id. Do not infer ownership from the
+-- first login, email text, or a hard-coded user.
+--
+-- Example only; replace both placeholders only after explicit verification:
+-- UPDATE public.projects
+-- SET owner_id = '<VERIFIED_AUTH_USER_UUID>'::uuid
+-- WHERE id = '<VERIFIED_PROJECT_UUID>'::uuid
+--   AND owner_id IS NULL;
+--
+-- Re-run the read-only NULL-owner count and confirm 0 only after every mapping
+-- is approved. Leave unmapped projects untouched and do not proceed to Phase C.
+-- Consider NOT NULL only after ownership review and an access-preservation plan.
+
+-- ================================================================
+-- PHASE C — RLS and policies (only after Phase A/B + policy audit)
+-- ================================================================
+-- This phase is intentionally not executable as a generic copy/paste block.
+-- First inspect existing policies: permissive policies combine with OR and can
+-- defeat the intended restriction. Verify actual names/columns and FK behavior.
+-- Then create separate SELECT/INSERT/UPDATE/DELETE policies per verified table.
+-- Projects policies must bind owner_id to auth.uid(); child policies must check
+-- project_id against an owned project in both USING and WITH CHECK as relevant.
+-- Enable RLS only after policies and owner coverage are ready, in a controlled
+-- rollout with ordinary authenticated-user tests. Do not force RLS by default.
+--
+-- Required before applying any Phase C SQL:
+--   * no unexplained NULL owners;
+--   * existing owner mapping preserved;
+--   * existing policies reviewed for permissive conflicts;
+--   * all child tables/columns verified;
+--   * rollback and temporary owner access plan reviewed;
+--   * User A/User B isolation test accounts available.
+
+-- STATUS: REQUIRES LIVE SCHEMA AUDIT AND VERIFIED OWNER MAPPING.
