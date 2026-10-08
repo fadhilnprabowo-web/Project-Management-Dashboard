@@ -57,7 +57,10 @@ import {
   deleteIssue,
   insertMaterial,
   updateMaterial,
-  deleteMaterial
+  deleteMaterial,
+  signIn,
+  signOut,
+  getSession
 } from './services/database'
 
 import {
@@ -217,9 +220,43 @@ const label = (k: string) =>
     deviation: 'Deviasi'
   } as any)[k] || k
 
+function LoginPage({ onLogin }: { onLogin: () => void }) {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setLoading(true)
+    setError('')
+    try {
+      await signIn(email, password)
+      onLogin()
+    } catch {
+      setError('Email atau password salah.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return <div className="login-page"><div className="login-card">
+    <div className="login-brand"><div className="login-logo">PM</div><div><h1>Project Management</h1><p>Project Engineer Dashboard</p></div></div>
+    <form onSubmit={submit}>
+      <label>Email<input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="Enter your email" autoComplete="email" required /></label>
+      <label>Password<div className="password-field"><input type={showPassword?'text':'password'} value={password} onChange={e=>setPassword(e.target.value)} placeholder="Enter your password" autoComplete="current-password" required /><button type="button" onClick={()=>setShowPassword(x=>!x)}>{showPassword?'Hide':'Show'}</button></div></label>
+      {error&&<div className="login-error">{error}</div>}
+      <button className="login-button" type="submit" disabled={loading}>{loading?'Signing in...':'Sign In'}</button>
+    </form>
+  </div></div>
+}
+
 function App() {
   const [db, setDb] = useState<Store>(load)
   const [loading, setLoading] = useState(true)
+  const [session, setSession] = useState<any>(null)
+  const [authLoading, setAuthLoading] = useState(true)
 
   const [pid, setPid] = useState(db.settings.defaultProject)
   const [page, setPage] = useState<Page>('Dashboard')
@@ -238,9 +275,37 @@ function App() {
     save(db)
   }, [db])
 
-  // Ambil data utama dari Supabase saat aplikasi pertama kali dibuka.
   useEffect(() => {
     let mounted = true
+
+    const checkAuth = async () => {
+      try {
+        const currentSession = await getSession()
+        if (mounted) setSession(currentSession)
+      } catch (error) {
+        console.error('AUTH SESSION ERROR:', error)
+      } finally {
+        if (mounted) setAuthLoading(false)
+      }
+    }
+
+    void checkAuth()
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, currentSession) => {
+      setSession(currentSession)
+    })
+
+    return () => {
+      mounted = false
+      subscription.unsubscribe()
+    }
+  }, [])
+
+  // Ambil data utama dari Supabase setelah pengguna terautentikasi.
+  useEffect(() => {
+    if (!session) return
+
+    let mounted = true
+    setLoading(true)
 
     const loadData = async () => {
       try {
@@ -270,7 +335,7 @@ function App() {
     return () => {
       mounted = false
     }
-  }, [])
+  }, [session])
 
   useEffect(() => {
     document.documentElement.dataset.theme = db.settings.dark
@@ -603,7 +668,11 @@ const deleteProjectFromSupabase = async (project: Project) => {
   }
 }
 const exportReport=()=>p&&void reportPdf(p,{Project:p.name,'Project Number':p.number,Client:p.client,Status:p.status,'Planned Progress':formatPercent(planned),'Actual Progress':formatPercent(actual),'Deviation':formatPercent(dev),'WBS Items':rows('wbs').length,'Open Issues':rows('issues').filter(x=>!['Resolved','Closed'].includes(x.status)).length},chart.current,`${safe(p.name)}_Project_Report.pdf`);const exportCurve=(t:string)=>{if(!p)return;try{if(t==='png'&&chart.current)void elementPng(chart.current,`${safe(p.name)}_S-Curve.png`);if(t==='svg'&&chart.current)chartSvg(chart.current,`${safe(p.name)}_S-Curve.svg`);if(t==='pdf'&&report.current)void pdfOut(report.current,`${safe(p.name)}_S-Curve.pdf`,'S-Curve',p);if(t==='excel')excelOut(sc,`${safe(p.name)}_S-Curve.xlsx`,'S-Curve');if(t==='print')window.print()}catch(e){notify('Export failed: '+String(e))}};
-return <div className="app"><aside className="sidebar"><div className="brand"><i>FN</i><div><b>Fadhil N Prabowo - Management Suites</b><small>PROJECT MANAGEMENT</small></div></div><div className="side-project"><small>ACTIVE PROJECT</small><select value={pid} onChange={e=>goProject(e.target.value)}>{db.projects.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select></div><nav>{[...new Set(nav.map(x=>x.group))].map(g=><section key={g}><label>{g}</label>{nav.filter(x=>x.group===g).map(x=><button className={page===x.label?'selected':''} key={x.label} onClick={()=>go(x.label)}><x.icon size={17}/>{x.label}</button>)}</section>)}</nav><div className="side-foot">{p?.engineer||'Project Engineer'}</div></aside><div className="main"><header><b>{page}</b><div><button className="secondary" onClick={addProject}>+ Project</button><button className="icon" onClick={()=>setDb(s=>({...s,settings:{...s.settings,dark:!s.settings.dark}}))}>{db.settings.dark?<Sun/>:<Moon/>}</button><select value={pid} onChange={e=>goProject(e.target.value)}>{db.projects.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select></div></header><main>
+if (authLoading) return <div className="auth-loading">Loading...</div>
+if (!session) return <LoginPage onLogin={() => { void getSession().then(setSession) }} />
+if (loading) return <div className="auth-loading">Loading project data...</div>
+
+return <div className="app"><aside className="sidebar"><div className="brand"><i>FN</i><div><b>Fadhil N Prabowo - Management Suites</b><small>PROJECT MANAGEMENT</small></div></div><div className="side-project"><small>ACTIVE PROJECT</small><select value={pid} onChange={e=>goProject(e.target.value)}>{db.projects.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select></div><nav>{[...new Set(nav.map(x=>x.group))].map(g=><section key={g}><label>{g}</label>{nav.filter(x=>x.group===g).map(x=><button className={page===x.label?'selected':''} key={x.label} onClick={()=>go(x.label)}><x.icon size={17}/>{x.label}</button>)}</section>)}</nav><div className="side-foot">{p?.engineer||'Project Engineer'}</div></aside><div className="main"><header><b>{page}</b><div><button className="secondary" onClick={addProject}>+ Project</button><button className="icon" onClick={()=>setDb(s=>({...s,settings:{...s.settings,dark:!s.settings.dark}}))}>{db.settings.dark?<Sun/>:<Moon/>}</button><select value={pid} onChange={e=>goProject(e.target.value)}>{db.projects.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select><button className="secondary" onClick={async()=>{try{await signOut();setSession(null)}catch(error){console.error('SIGN OUT ERROR:',error);notify('Logout failed')}}}>Logout</button></div></header><main>
 {page==='Projects'&&<><PageHead title="Projects" subtitle="Manage project workspaces." action="Create Project" onAction={addProject}/><div className="cards">{db.projects.map(x=><div className="panel" key={x.id}><Tag v={x.archived?'Archived':x.status}/><h3>{x.name}</h3><p>{x.number} · {x.client}</p><button className="primary" onClick={()=>goProject(x.id)}>Open project</button><button className="secondary" onClick={()=>void duplicateProject(x)}>Duplicate</button><button className="secondary" onClick={()=>void archiveProject(x)}>{x.archived?'Restore':'Archive'}</button><button className="danger-button" onClick={()=>void deleteProjectFromSupabase(x)}>Delete</button></div>)}</div></>}{page === 'Dashboard' && p && (
   <div className="dashboard-modern">
     <div className="panel dashboard-header">
