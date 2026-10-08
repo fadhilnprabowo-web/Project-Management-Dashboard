@@ -26,3 +26,180 @@
 .doc-upload{cursor:pointer}.doc-upload input{display:none}.documentation-print{max-width:850px;margin:0 auto 20px;background:#fff;color:#111;padding:28px;box-shadow:0 2px 12px #1d2d4415}.documentation-heading{height:auto;background:transparent;border:0;border-bottom:0;display:block;text-align:center;padding:0;margin:0 0 22px;color:#111}.documentation-heading h1,.documentation-heading h2{font:400 13px Arial,sans-serif;margin:0 0 7px}.documentation-heading p{font:11px Arial,sans-serif;margin:8px 0;color:#111}.documentation-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));border-top:1px solid #111;border-left:1px solid #111}.documentation-item{border-right:1px solid #111;border-bottom:1px solid #111;min-width:0;break-inside:avoid}.documentation-caption{text-align:center;font:10px Arial,sans-serif;color:#111;padding:4px;border-bottom:1px solid #111;min-height:22px}.documentation-item>img{display:block;width:100%;height:210px;object-fit:cover}.documentation-edit{display:flex;align-items:center;gap:5px;padding:5px}.documentation-edit input{flex:1;min-width:0;padding:5px;border:1px solid var(--line);border-radius:4px;background:var(--panel);color:var(--text);font-size:10px}.documentation-empty{text-align:center;padding:70px 10px;color:var(--muted)}.documentation-empty p{font-size:12px}@page{size:A4 portrait;margin:12mm}@media print{body:has(.documentation-print) *{visibility:hidden!important}body:has(.documentation-print) .documentation-print,body:has(.documentation-print) .documentation-print *{visibility:visible!important}body:has(.documentation-print) .documentation-print{position:absolute;left:0;top:0;width:100%;max-width:none;min-height:0;margin:0;padding:0;box-shadow:none;background:#fff;color:#000}.documentation-heading{height:auto!important;display:block!important;background:none!important;border:0!important;text-align:center!important;padding:0!important;margin:0 0 8mm!important}.documentation-heading h1,.documentation-heading h2{font-size:11pt}.documentation-heading p{font-size:9pt}.documentation-item{break-inside:avoid}.documentation-caption{font-size:8pt;min-height:7mm;padding:1.5mm}.documentation-item>img{height:45mm;object-fit:cover}.documentation-edit{display:none!important}.documentation-empty{display:none!important}}
 .month-picker input[type=week]{min-width:190px;min-height:38px;cursor:pointer;color:var(--text);color-scheme:light}
 .weekly-progress-panel table{table-layout:fixed;width:100%}.weekly-progress-panel th:nth-child(4),.weekly-progress-panel td:nth-child(4){width:280px;max-width:280px;white-space:normal;overflow-wrap:anywhere;word-break:normal;line-height:1.5}
+/* =========================================
+   MODERN PROJECT DASHBOARD
+========================================= */
+
+.dashboard-modern {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.dashboard-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.dashboard-header h1 {
+  margin: 6px 0;
+  font-size: 28px;
+  font-weight: 700;
+}
+
+.dashboard-header p {
+  margin: 0;
+  opacity: 0.65;
+}
+
+.eyebrow {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  opacity: 0.55;
+}
+
+.project-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.dashboard-kpis {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.dashboard-chart {
+  min-height: 390px;
+}
+
+.dashboard-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.dashboard-section-head h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.dashboard-section-head p {
+  margin: 5px 0 0;
+  font-size: 13px;
+  opacity: 0.55;
+}
+
+.chart-summary {
+  text-align: right;
+}
+
+.chart-summary strong {
+  display: block;
+  font-size: 22px;
+}
+
+.chart-summary span {
+  font-size: 11px;
+  opacity: 0.55;
+}
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: 20px;
+}
+
+.progress-list {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.progress-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.progress-info {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.progress-info span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.progress-track {
+  width: 100%;
+  height: 7px;
+  border-radius: 99px;
+  background: rgba(127, 127, 127, 0.15);
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: currentColor;
+  transition: width 0.3s ease;
+}
+
+.health-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.health-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 13px 0;
+  border-bottom: 1px solid rgba(127, 127, 127, 0.12);
+}
+
+.health-row:last-child {
+  border-bottom: none;
+}
+
+.health-row span {
+  font-size: 13px;
+  opacity: 0.65;
+}
+
+.health-row strong {
+  font-size: 15px;
+}
+
+@media (max-width: 900px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .dashboard-kpis {
+    grid-template-columns: 1fr;
+  }
+}
