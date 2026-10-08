@@ -1009,7 +1009,6 @@ return <div className={`app ${sidebarOpen ? 'sidebar-is-open' : 'sidebar-is-clos
   row={modal}
   cols={cols}
   wbsRows={rows('wbs')}
-  activityRows={rows('activities')}
   isWeekly={page === 'Weekly Progress'}
   onSave={saveRow}
   close={() => setModal(null)}
@@ -1022,7 +1021,6 @@ function PageHead({title,subtitle,action,onAction}:any){return <div className="p
   row,
   cols,
   wbsRows = [],
-  activityRows = [],
   isWeekly = false,
   onSave,
   close
@@ -1037,14 +1035,13 @@ const [v, setV] = useState<any>(() => row ?? {})
   const selectedWbsRows = wbsRows.filter(
     (x: any) => x != null && selectedWbsIds.includes(x.id)
   )
-  const selectedWbsCodes = selectedWbsRows.map((x: any) => String(x.code ?? ''))
-
-  const filteredActivities = activityRows.filter(
-    (x: any) => x != null && (
-      selectedWbsIds.includes(x.wbsId) ||
-      selectedWbsCodes.includes(String(x.wbsCode ?? ''))
-    )
-  )
+  const weeklyActivities = selectedWbsRows
+    .map((x: any) => ({
+      id: x.id,
+      code: String(x.code ?? ''),
+      activity: String(x.activity ?? '').trim(),
+    }))
+    .filter((x: any) => x.activity)
 
   const update = (key: string, value: any) => {
     setV((old: any) => ({
@@ -1056,11 +1053,7 @@ const [v, setV] = useState<any>(() => row ?? {})
   const selectWbs = (ids: string[]) => {
     const selected = wbsRows.filter((x: any) => x != null && ids.includes(x.id))
     const codes = selected.map((x: any) => String(x.code ?? ''))
-    const linkedActivities = activityRows.filter((x: any) => x != null && (
-      ids.includes(x.wbsId) || codes.includes(String(x.wbsCode ?? ''))
-    ))
-    const activityIds = linkedActivities.map((x: any) => x.id)
-    const activityNames = linkedActivities.map((x: any) => String(x.activity ?? '')).filter(Boolean)
+    const activityNames = [...new Set(selected.map((x: any) => String(x.activity ?? '').trim()).filter(Boolean))]
 
     setV((old: any) => ({
       ...old,
@@ -1068,8 +1061,8 @@ const [v, setV] = useState<any>(() => row ?? {})
       wbsId: ids[0] ?? '',
       wbsCodes: codes,
       wbsCode: codes.join(', '),
-      activityIds,
-      activityId: activityIds[0] ?? '',
+      activityIds: [],
+      activityId: '',
       activityNames,
       activity: activityNames.join(', ')
     }))
@@ -1081,7 +1074,22 @@ const [v, setV] = useState<any>(() => row ?? {})
         className="modal"
         onSubmit={e => {
           e.preventDefault()
-          onSave(v)
+          if (isWeekly) {
+            const activityNames = [...new Set(selectedWbsRows.map((x: any) => String(x.activity ?? '').trim()).filter(Boolean))]
+            onSave({
+              ...v,
+              wbsIds: selectedWbsRows.map((x: any) => x.id),
+              wbsId: selectedWbsRows[0]?.id ?? '',
+              wbsCodes: selectedWbsRows.map((x: any) => String(x.code ?? '')),
+              wbsCode: selectedWbsRows.map((x: any) => String(x.code ?? '')).join(', '),
+              activityIds: [],
+              activityId: '',
+              activityNames,
+              activity: activityNames.join(', '),
+            })
+          } else {
+            onSave(v)
+          }
         }}
       >
         <h2>
@@ -1127,10 +1135,10 @@ const [v, setV] = useState<any>(() => row ?? {})
                 <label key={k}>
                   Activity
                   <div className="activity-autofill">
-                    {filteredActivities.length
-                      ? filteredActivities.map((x: any) => <div key={x.id}>{x.activity || '-'}</div>)
+                    {weeklyActivities.length
+                      ? weeklyActivities.map((x: any) => <div key={x.id}><strong>{x.activity}</strong><small>{x.code ? `WBS ${x.code}` : ''}</small></div>)
                       : selectedWbsIds.length
-                        ? 'Belum ada Activity yang terhubung ke WBS pilihan.'
+                        ? 'Keterangan Activity pada WBS pilihan belum diisi.'
                         : 'Pilih WBS untuk menampilkan Activity secara otomatis.'}
                   </div>
                 </label>

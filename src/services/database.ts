@@ -426,7 +426,7 @@ export async function getProgress(projectId: string): Promise<Row[]> {
     { data: activityData, error: activityError },
   ] = await Promise.all([
     supabase.from('weekly_progress').select('*').eq('project_id', projectId).order('week_number', { ascending: true }),
-    supabase.from('wbs').select('id, wbs_code').eq('project_id', projectId),
+    supabase.from('wbs').select('id, wbs_code, wbs_name').eq('project_id', projectId),
     supabase.from('activities').select('id, activity_name').eq('project_id', projectId),
   ])
 
@@ -434,7 +434,10 @@ export async function getProgress(projectId: string): Promise<Row[]> {
   if (wbsError) throw wbsError
   if (activityError) throw activityError
 
-  const wbsById = new Map((wbsData ?? []).map((item: any) => [item.id, item.wbs_code ?? '']))
+  const wbsById = new Map((wbsData ?? []).map((item: any) => [item.id, {
+    code: item.wbs_code ?? '',
+    activity: item.wbs_name ?? '',
+  }]))
   const activityById = new Map((activityData ?? []).map((item: any) => [item.id, item.activity_name ?? '']))
 
   return (data ?? []).map((x: any) => {
@@ -442,8 +445,15 @@ export async function getProgress(projectId: string): Promise<Row[]> {
     const links = parsed.links ?? {}
     const wbsIds = links.wbsIds?.length ? links.wbsIds : x.wbs_id ? [x.wbs_id] : []
     const activityIds = links.activityIds?.length ? links.activityIds : x.activity_id ? [x.activity_id] : []
-    const wbsCodes = links.wbsCodes?.length ? links.wbsCodes : wbsIds.map((id: string) => wbsById.get(id)).filter(Boolean)
-    const activityNames = links.activityNames?.length ? links.activityNames : activityIds.map((id: string) => activityById.get(id)).filter(Boolean)
+    const wbsCodes = links.wbsCodes?.length
+      ? links.wbsCodes
+      : wbsIds.map((id: string) => wbsById.get(id)?.code).filter(Boolean)
+    const legacyActivityNames = activityIds.map((id: string) => activityById.get(id)).filter(Boolean)
+    const activityNames = links.activityNames?.length
+      ? links.activityNames
+      : legacyActivityNames.length
+        ? legacyActivityNames
+        : wbsIds.map((id: string) => wbsById.get(id)?.activity).filter(Boolean)
 
     return {
       id: x.id,
