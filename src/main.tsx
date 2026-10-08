@@ -58,6 +58,8 @@ import {
   insertMaterial,
   updateMaterial,
   deleteMaterial,
+  duplicateProjectWithData,
+  restoreBackupToSupabase,
   signIn,
   signOut,
   getSession
@@ -538,6 +540,77 @@ const remove = async (id: string) => {
   }
 }
 
+const importExcelRows = async (
+  key: 'wbs' | 'progress' | 'activities' | 'issues' | 'materials',
+  rawRows: any[]
+) => {
+  if (!rawRows.length) {
+    notify('Tidak ada data untuk diimport')
+    return
+  }
+  if (!pid) {
+    notify('Pilih project sebelum import')
+    return
+  }
+
+  const pageName = key === 'wbs'
+    ? 'WBS'
+    : key === 'progress'
+      ? 'Weekly Progress'
+      : key === 'activities'
+        ? 'Activities'
+        : key === 'issues'
+          ? 'Issues'
+          : 'Materials'
+  const reverseLabels: Record<string, string> = {}
+  schemas[pageName].forEach(k => { reverseLabels[label(k)] = k })
+
+  try {
+    let imported = 0
+    for (const raw of rawRows) {
+      const row: Row = { id: crypto.randomUUID(), projectId: pid }
+      Object.entries(raw).forEach(([excelKey, value]) => {
+        const internalKey = reverseLabels[excelKey] || excelKey
+        row[internalKey] = value instanceof Date ? value.toISOString().slice(0, 10) : value
+      })
+
+      if (key === 'wbs') {
+        await insertWBS(row)
+      } else if (key === 'activities') {
+        const selectedWbs = rows('wbs').find((x: any) => x && String(x.code) === String(row.wbsCode || ''))
+        row.wbsId = row.wbsId || selectedWbs?.id || ''
+        await insertActivity(row)
+      } else if (key === 'progress') {
+        const selectedWbs = rows('wbs').find((x: any) => x && String(x.code) === String(row.wbsCode || ''))
+        row.wbsId = row.wbsId || selectedWbs?.id || ''
+        const selectedActivity = rows('activities').find((x: any) => x && String(x.activity) === String(row.activity || ''))
+        row.activityId = row.activityId || selectedActivity?.id || ''
+        await insertProgress(row)
+      } else if (key === 'issues') {
+        await insertIssue(row)
+      } else {
+        await insertMaterial(row)
+      }
+      imported++
+    }
+
+    const refreshed = await loadFromSupabase()
+    setDb(refreshed)
+    setPid(refreshed.projects.some(project => project.id === pid) ? pid : refreshed.settings.defaultProject)
+    setImp(null)
+    notify(`${imported} record berhasil diimport ke Supabase`)
+  } catch (error) {
+    console.error('IMPORT EXCEL ERROR:', error)
+    notify('Import gagal. Periksa format kolom Excel.')
+    try {
+      const refreshed = await loadFromSupabase()
+      setDb(refreshed)
+    } catch (refreshError) {
+      console.error('IMPORT REFRESH ERROR:', refreshError)
+    }
+  }
+}
+
 const resolveIssue = async (row: Row) => {
   const resolved = { ...row, status: 'Resolved' }
   try {
@@ -613,21 +686,22 @@ const addProject = async () => {
 };
 const duplicateProject = async (project: Project) => {
   try {
-    const duplicated: Project = {
-      ...project,
-      id: crypto.randomUUID(),
-      name: `${project.name} - Copy`,
-      number: project.number ? `${project.number}-COPY` : '',
-      archived: false
-    }
-    const inserted = await insertProject(duplicated)
-    const savedProject: Project = { ...duplicated, id: inserted.id }
-    setDb(s => ({ ...s, projects: [...s.projects, savedProject] }))
-    setPid(inserted.id)
-    notify('Project berhasil diduplikasi')
+    const duplicated = await duplicateProjectWithData(
+      project,
+      db.wbs.filter(x => x.projectId === project.id),
+      db.activities.filter(x => x.projectId === project.id),
+      db.progress.filter(x => x.projectId === project.id),
+      db.issues.filter(x => x.projectId === project.id),
+      db.materials.filter(x => x.projectId === project.id)
+    )
+    const refreshed = await loadFromSupabase()
+    setDb(refreshed)
+    setPid(duplicated.id)
+    go('Dashboard')
+    notify('Project dan seluruh data berhasil diduplikasi')
   } catch (error) {
     console.error('DUPLICATE PROJECT ERROR:', error)
-    notify('Gagal duplicate project')
+    notify('Gagal duplicate project dan data')
   }
 }
 const archiveProject = async (project: Project) => {
@@ -730,12 +804,11 @@ return <div className={`app ${sidebarOpen ? 'sidebar-is-open' : 'sidebar-is-clos
       </div>
     </div>
   </div>
-)}{tableKey&&<><PageHead title={page} subtitle={`Manage ${page.toLowerCase()} for this project.`} action="Add record" onAction={()=>setModal({id:crypto.randomUUID(),projectId:pid})}/><div className="toolbar"><span><Search size={16}/><input placeholder="Search records" value={search} onChange={e=>setSearch(e.target.value)}/></span><button className="secondary" onClick={()=>{const w=XLSX.utils.book_new();XLSX.utils.book_append_sheet(w,XLSX.utils.json_to_sheet([Object.fromEntries(cols.map(k=>[label(k),'']))]),page);XLSX.writeFile(w,`${page}_template.xlsx`)}}>Template</button><label className="secondary">Import<input type="file" accept=".xlsx,.xls,.csv" onChange={e=>{const f=e.target.files?.[0];if(!f||!tableKey)return;const rd=new FileReader();rd.onload=()=>{try{const w=XLSX.read(rd.result,{type:'array'});setImp({key:tableKey,rows:XLSX.utils.sheet_to_json(w.Sheets[w.SheetNames[0]])})}catch{notify('Excel import failed')}};rd.readAsArrayBuffer(f)}}/></label><button className="secondary" onClick={()=>excelOut(shown,`${page}.xlsx`,page)}>Excel</button><button className="secondary" onClick={()=>csvOut(shown,`${page}.csv`)}>CSV</button><button className="secondary" onClick={()=>report.current&&void pdfOut(report.current,`${page}.pdf`,page,p)}>PDF</button></div><div className={`panel table-panel ${page==='Weekly Progress'?'weekly-progress-panel':''}`} ref={report}><div className="table-scroll"><table><thead><tr>{cols.map(k=><th key={k}>{label(k)}</th>)}<th>Actions</th></tr></thead><tbody>{shown.map(r=><tr key={r.id}>{cols.map(k=><td key={k}>{['planned','actual','plannedWeekly','actualWeekly','weight','progress'].includes(k)?formatPercent(r[k]):r[k]??'—'}</td>)}<td>{page==='Issues'&&!['Resolved','Closed'].includes(r.status)&&<button className='resolve-btn' onClick={()=>void resolveIssue(r)}>Mark Resolved</button>}<button className='icon' onClick={()=>setModal(r)}><Edit3 size={15}/></button><button className="icon" onClick={()=>remove(r.id)}><Trash2 size={15}/></button></td></tr>)}{!shown.length&&<tr><td colSpan={cols.length+1}>No {page.toLowerCase()} data available.</td></tr>}</tbody></table></div>{shown.length} records · auto-saved</div></>}
+)}{tableKey&&<><PageHead title={page} subtitle={`Manage ${page.toLowerCase()} for this project.`} action="Add record" onAction={()=>setModal({id:crypto.randomUUID(),projectId:pid})}/><div className="toolbar"><span><Search size={16}/><input placeholder="Search records" value={search} onChange={e=>setSearch(e.target.value)}/></span><button className="secondary" onClick={()=>{const w=XLSX.utils.book_new();XLSX.utils.book_append_sheet(w,XLSX.utils.json_to_sheet([Object.fromEntries(cols.map(k=>[label(k),'']))]),page);XLSX.writeFile(w,`${page}_template.xlsx`)}}>Template</button><label className="secondary">Import<input type="file" accept=".xlsx,.xls,.csv" onChange={e=>{const f=e.target.files?.[0];if(!f||!tableKey)return;const rd=new FileReader();rd.onload=()=>{try{const w=XLSX.read(rd.result,{type:'array',cellDates:true});const sheet=w.Sheets[w.SheetNames[0]];const importedRows=XLSX.utils.sheet_to_json(sheet);setImp({key:tableKey,rows:importedRows})}catch{notify('Excel import failed')}};rd.readAsArrayBuffer(f);e.currentTarget.value=''}}/></label><button className="secondary" onClick={()=>excelOut(shown,`${page}.xlsx`,page)}>Excel</button><button className="secondary" onClick={()=>csvOut(shown,`${page}.csv`)}>CSV</button><button className="secondary" onClick={()=>report.current&&void pdfOut(report.current,`${page}.pdf`,page,p)}>PDF</button></div><div className={`panel table-panel ${page==='Weekly Progress'?'weekly-progress-panel':''}`} ref={report}><div className="table-scroll"><table><thead><tr>{cols.map(k=><th key={k}>{label(k)}</th>)}<th>Actions</th></tr></thead><tbody>{shown.map(r=><tr key={r.id}>{cols.map(k=><td key={k}>{['planned','actual','plannedWeekly','actualWeekly','weight','progress'].includes(k)?formatPercent(r[k]):r[k]??'—'}</td>)}<td>{page==='Issues'&&!['Resolved','Closed'].includes(r.status)&&<button className='resolve-btn' onClick={()=>void resolveIssue(r)}>Mark Resolved</button>}<button className='icon' onClick={()=>setModal(r)}><Edit3 size={15}/></button><button className="icon" onClick={()=>remove(r.id)}><Trash2 size={15}/></button></td></tr>)}{!shown.length&&<tr><td colSpan={cols.length+1}>No {page.toLowerCase()} data available.</td></tr>}</tbody></table></div>{shown.length} records · auto-saved</div></>}
 {page==='S-Curve'&&<><PageHead title="S-Curve Analysis" subtitle="Planned and actual cumulative progress with deviation."/><div className="kpis"><Kpi title="Total Persentase Rencana" value={formatPercent(planned)}/><Kpi title="Total Persentase Aktual" value={formatPercent(actual)}/><Kpi title="Selisih Aktual − Rencana" value={formatPercent(dev)}/></div><div className="panel" ref={report}><div className="line"><PanelTitle title="Progress curve"/>{['png','svg','pdf','excel'].map(x=><button className="secondary" key={x} onClick={()=>exportCurve(x)}>{x.toUpperCase()}</button>)}<button className="secondary" onClick={()=>window.print()}><Printer size={15}/> Print</button></div><Chart data={sc} refEl={chart} large/><SCurveBreakdownTable data={sc}/></div></>}
 {page==='Dokumentasi Pekerjaan'&&p&&<WorkDocumentation project={p} entries={p.documentation||[]} onChange={items=>editProject('documentation',items)}/>} {page==='Berita Acara'&&p&&<BeritaAcara project={p} progress={actual} onChange={editProject}/>} {page==='Weekly Recap'&&p&&<WeeklyRecap project={p} progress={rows('progress')}/>} {page==='Monthly Recap'&&p&&<MonthlyRecap project={p} progress={rows('progress')}/>}{page==='Project Settings'&&p&&<ProjectForm p={p} change={editProject}/>}{page==='Approval'&&p&&<ApprovalForm p={p} change={editProject}/>}{page==='Company Branding'&&p&&<BrandForm p={p} change={editProject} notify={notify}/>}
 {page==='Export Center'&&<><PageHead title="Export Center" subtitle="Generate project files from latest data."/><div className="cards">{[['Project Excel',()=>p&&projectWorkbook(p,db)],['Project JSON',()=>p&&jsonOut({project:p,wbs:rows('wbs'),progress:rows('progress'),activities:rows('activities'),issues:rows('issues'),materials:rows('materials')},`${safe(p.name)}.json`)],['Full backup JSON',()=>jsonOut(db,'Project_Backup.json')],['Project report PDF',exportReport]].map(([n,f]:any)=><div className="panel"><h3>{n}</h3><button className="primary" onClick={f}>Download</button></div>)}</div></>}
-{page==='Backup & Restore'&&<><PageHead title="Backup & Restore"/><div className="panel"><h3>Export full backup</h3><button className="primary" onClick={()=>jsonOut(db,'Project_Dashboard_Backup.json')}>Export backup</button><h3>Restore backup</h3><input type="file" accept=".json" onChange={e=>{const f=e.target.files?.[0];if(!f)return;const rd=new FileReader();rd.onload=()=>{try{const x=JSON.parse(String(rd.result));if(x.projects&&confirm('Replace current data with backup?')){setDb(x);setPid(x.projects[0]?.id)}}catch{notify('Invalid backup')}};rd.readAsText(f)}}/></div></>}
-{page==='Project Report'&&<><PageHead title="Project Report" action="Generate PDF" onAction={exportReport}/><div className="panel" ref={report}><h1>{p?.name}</h1><p>{p?.client} · {p?.number}</p><div className="kpis"><Kpi title="Total Persentase Rencana" value={formatPercent(planned)}/><Kpi title="Total Persentase Aktual" value={formatPercent(actual)}/><Kpi title="Selisih Aktual − Rencana" value={formatPercent(dev)}/></div><Chart data={sc} refEl={chart}/>{p&&<ApprovalSummary p={p}/>}</div></>}
+{page === 'Backup & Restore' && <><PageHead title="Backup & Restore" subtitle="Backup and restore project data from Supabase."/><div className="panel"><h3>Export full backup</h3><p>Export seluruh project dan data WBS, Activities, Weekly Progress, Issues, dan Materials.</p><button className="primary" onClick={()=>jsonOut(db,'Project_Dashboard_Backup.json')}>Export backup</button></div><div className="panel"><h3>Restore backup</h3><p>Restore data backup langsung ke Supabase.</p><input type="file" accept=".json" onChange={e=>{const f=e.target.files?.[0];if(!f)return;const rd=new FileReader();rd.onload=async()=>{try{const backup=JSON.parse(String(rd.result));if(!backup.projects||!Array.isArray(backup.projects)){notify('Invalid backup format');return}const confirmed=confirm(`Restore ${backup.projects.length} project(s) ke Supabase?\n\nData dengan ID yang sama akan diperbarui.`);if(!confirmed)return;await restoreBackupToSupabase(backup);const refreshed=await loadFromSupabase();setDb(refreshed);setPid(refreshed.projects.some(project=>project.id===pid)?pid:refreshed.settings.defaultProject);notify('Backup berhasil direstore ke Supabase')}catch(error){console.error('RESTORE ERROR:',error);notify('Restore backup gagal')}};rd.readAsText(f);e.currentTarget.value=''}}/></div></>}{page==='Project Report'&&<><PageHead title="Project Report" action="Generate PDF" onAction={exportReport}/><div className="panel" ref={report}><h1>{p?.name}</h1><p>{p?.client} · {p?.number}</p><div className="kpis"><Kpi title="Total Persentase Rencana" value={formatPercent(planned)}/><Kpi title="Total Persentase Aktual" value={formatPercent(actual)}/><Kpi title="Selisih Aktual − Rencana" value={formatPercent(dev)}/></div><Chart data={sc} refEl={chart}/>{p&&<ApprovalSummary p={p}/>}</div></>}
 </main><footer>Saved automatically in this browser</footer></div>{toast&&<div className="toast">{toast}</div>}{modal && <RowModal
   row={modal}
   cols={cols}
@@ -744,7 +817,7 @@ return <div className={`app ${sidebarOpen ? 'sidebar-is-open' : 'sidebar-is-clos
   isWeekly={page === 'Weekly Progress'}
   onSave={saveRow}
   close={() => setModal(null)}
-/>}{imp&&<div className="backdrop"><div className="modal"><h2>Import preview</h2><p>{imp.rows.length} records found. Existing records are preserved.</p><button onClick={()=>setImp(null)}>Cancel</button><button className="primary" onClick={()=>{setDb(s=>({...s,[imp.key]:[...(s as any)[imp.key],...imp.rows.map((r:any)=>({...r,id:crypto.randomUUID(),projectId:pid}))]}));setImp(null)}}>Import</button></div></div>}</div>}
+/>}{imp && <div className="backdrop"><div className="modal"><h2>Import preview</h2><p>{imp.rows.length} records found.</p><p>Data akan langsung disimpan ke Supabase.</p><div className="line"><button className="secondary" onClick={()=>setImp(null)}>Cancel</button><button className="primary" onClick={()=>void importExcelRows(imp.key,imp.rows)}>Import to Supabase</button></div></div></div>}</div>}
 function ProjectForm({p,change}:any){const keys=['name','number','client','location','manager','engineer','contractor','consultant','start','finish','value','status','description'];return <div className="panel form-grid">{keys.map((k:string)=><label key={k}>{label(k)}<input value={p?.[k]??''} type={k==='value'?'number':k==='start'||k==='finish'?'date':'text'} onChange={e=>change(k,k==='value'?Number(e.target.value):e.target.value)}/></label>)}</div>}
 function ApprovalForm({p,change}:any){const approval=p?.approval||{};const updateApproval=(key:string,value:string)=>change('approval',{...approval,[key]:value});const sections=[{title:'Approval 1',fields:[['firstCompany','Company'],['firstName','Name'],['firstPosition','Position'],['firstSignature','Signature']]},{title:'Approval 2',fields:[['secondCompany','Company'],['secondName','Name'],['secondPosition','Position'],['secondSignature','Signature']]}];return <div className="stack">{sections.map(section=><div className="panel" key={section.title}><h2>{section.title}</h2><div className="form-grid">{section.fields.map(([key,title])=><label key={key}>{title}<input value={approval[key]??''} onChange={e=>updateApproval(key,e.target.value)}/></label>)}</div></div>)}</div>}
 function BrandForm({p,change,notify}:any){const [logo,setLogo]=useState(p?.logo||'');useEffect(()=>setLogo(p?.logo||''),[p?.logo]);const saveBranding=()=>{change('logo',logo);notify('Company branding updated')};return <div className="panel"><h2>Company Branding</h2><div className="form-grid"><label>Logo URL<input value={logo} onChange={e=>setLogo(e.target.value)} placeholder="https://..."/></label></div>{logo&&<div style={{marginTop:20}}><p>Preview</p><img src={logo} alt="Company Logo" style={{maxWidth:240,maxHeight:120,objectFit:'contain'}}/></div>}<button type="button" className="primary" onClick={saveBranding} style={{marginTop:20}}>Save Branding</button></div>}
