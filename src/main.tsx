@@ -242,23 +242,25 @@ function validateProgressRow(row: Row, existing: Row[], projectWbs: Row[], ignor
     if (!linkedWbs) return 'WBS yang dipilih tidak ditemukan pada project aktif. Muat ulang data lalu pilih kembali.'
     if (!String(linkedWbs.activity || '').trim()) return `Keterangan Activity untuk WBS ${linkedWbs.code || id} belum diisi.`
   }
-  if (existing.some(item => item.id !== ignoredId && item.projectId === row.projectId && Number(item.week) === week)) {
+  const isIgnoredRecord = (item: Row) => ignoredId != null && String(item.id) === String(ignoredId)
+  if (existing.some(item => !isIgnoredRecord(item) && item.projectId === row.projectId && Number(item.week) === week)) {
     return `Minggu ${week} sudah memiliki data Weekly Progress untuk project ini.`
   }
-  if (existing.some(item => item.id !== ignoredId && item.projectId === row.projectId && String(item.date) === String(row.date))) {
+  if (existing.some(item => !isIgnoredRecord(item) && item.projectId === row.projectId && String(item.date) === String(row.date))) {
     return `Tanggal ${row.date} sudah digunakan oleh Weekly Progress lain dalam project ini.`
   }
-  const ordered = [...existing.filter(item => item.id !== ignoredId && item.projectId === row.projectId), row]
+  const ordered = [...existing.filter(item => !isIgnoredRecord(item) && item.projectId === row.projectId), row]
     .sort((a, b) => Number(a.week) - Number(b.week))
   if (ordered.some((item, index) => index > 0 && String(ordered[index - 1].date) > String(item.date))) {
     return 'Tanggal progres harus berurutan sesuai nomor minggu.'
   }
   for (const key of ['plannedWeekly', 'actualWeekly'] as const) {
-    const cumulative = existing
-      .filter(item => item.id !== ignoredId && item.projectId === row.projectId)
-      .reduce((total, item) => total + parseLocaleNumber(item[key]), 0)
-      + parseLocaleNumber(row[key])
-    if (cumulative > 100.000001) return `Total kumulatif ${key === 'plannedWeekly' ? 'rencana' : 'aktual'} tidak boleh melebihi 100%.`
+    const weeklyValues = existing
+      .filter(item => !isIgnoredRecord(item) && item.projectId === row.projectId)
+      .map(item => Math.round(parseLocaleNumber(item[key]) * 100))
+    weeklyValues.push(Math.round(parseLocaleNumber(row[key]) * 100))
+    const cumulative = weeklyValues.reduce((total, value) => total + value, 0) / 100
+    if (cumulative > 100) return `Total kumulatif ${key === 'plannedWeekly' ? 'rencana' : 'aktual'} menjadi ${cumulative.toFixed(2)}%; batas maksimum 100%.`
   }
   return ''
 }
@@ -575,8 +577,9 @@ const saveRow = async (r: Row) => {
   const saveRevisionAtStart = beginSave()
 
   if (tableKey === 'progress') {
-      const validationError = validateProgressRow(r, db.progress, rows('wbs'), r.id)
+    const validationError = validateProgressRow(r, db.progress, rows('wbs'), r.id)
     if (validationError) {
+      finishSave(saveRevisionAtStart, true)
       notify(validationError)
       return
     }
