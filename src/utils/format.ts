@@ -1,0 +1,1 @@
+export function formatPercent(value:unknown){const n=Number(value);const valid=Number.isFinite(n)?n:0;const absolute=Math.abs(valid);const rounded=Math.sign(valid)*Math.round((absolute+Number.EPSILON*Math.max(1,absolute))*100)/100;return `${rounded.toLocaleString('id-ID',{minimumFractionDigits:2,maximumFractionDigits:2})}%`}
