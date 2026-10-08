@@ -299,3 +299,16 @@
   .sidebar-overlay { display: block; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.35); z-index: 999; }
   header { display: flex; }
 }
+
+/* Weekly Progress WBS picker and automatic activity list */
+.wbs-field { position: relative; }
+.wbs-field > span:first-child { font-size: 11px; }
+.wbs-picker-trigger { width: 100%; display: flex; justify-content: space-between; align-items: center; }
+.wbs-picker-trigger:after { content: none; }
+.wbs-multi-select { position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 20; box-shadow: 0 12px 28px rgba(20, 35, 60, 0.18); }
+.wbs-multi-select > label > span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.wbs-multi-select > label b { color: var(--text); }
+.wbs-multi-select > label small { overflow-wrap: anywhere; }
+.wbs-empty { display: block; padding: 8px; }
+.activity-autofill { min-height: 40px; max-height: 140px; overflow: auto; padding: 9px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--shade); color: var(--text); font-size: 12px; line-height: 1.5; }
+.activity-autofill > div + div { margin-top: 5px; padding-top: 5px; border-top: 1px solid var(--line); }

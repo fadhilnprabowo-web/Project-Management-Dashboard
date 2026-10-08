@@ -832,15 +832,22 @@ function PageHead({title,subtitle,action,onAction}:any){return <div className="p
   close
 }: any) {
 const [v, setV] = useState<any>(() => row ?? {})
-
-  const selectedWbs = wbsRows.find(
-    (x: any) => x != null && String(x.code) === String(v.wbsCode)
+  const [wbsPickerOpen, setWbsPickerOpen] = useState(false)
+  const selectedWbsIds: string[] = Array.isArray(v.wbsIds)
+    ? v.wbsIds
+    : v.wbsId
+      ? [v.wbsId]
+      : []
+  const selectedWbsRows = wbsRows.filter(
+    (x: any) => x != null && selectedWbsIds.includes(x.id)
   )
+  const selectedWbsCodes = selectedWbsRows.map((x: any) => String(x.code ?? ''))
 
   const filteredActivities = activityRows.filter(
-    (x: any) =>
-      x != null && (!v.wbsCode ||
-      String(x.wbsCode) === String(v.wbsCode))
+    (x: any) => x != null && (
+      selectedWbsIds.includes(x.wbsId) ||
+      selectedWbsCodes.includes(String(x.wbsCode ?? ''))
+    )
   )
 
   const update = (key: string, value: any) => {
@@ -850,29 +857,25 @@ const [v, setV] = useState<any>(() => row ?? {})
     }))
   }
 
-  const selectWbs = (code: string) => {
-    const selected = wbsRows.find(
-      (x: any) => x != null && String(x.code) === String(code)
-    )
+  const selectWbs = (ids: string[]) => {
+    const selected = wbsRows.filter((x: any) => x != null && ids.includes(x.id))
+    const codes = selected.map((x: any) => String(x.code ?? ''))
+    const linkedActivities = activityRows.filter((x: any) => x != null && (
+      ids.includes(x.wbsId) || codes.includes(String(x.wbsCode ?? ''))
+    ))
+    const activityIds = linkedActivities.map((x: any) => x.id)
+    const activityNames = linkedActivities.map((x: any) => String(x.activity ?? '')).filter(Boolean)
 
     setV((old: any) => ({
       ...old,
-      wbsCode: code,
-      wbsId: selected?.id || '',
-      activity: '',
-      activityId: ''
-    }))
-  }
-
-  const selectActivity = (id: string) => {
-    const selected = activityRows.find(
-      (x: any) => x != null && x.id === id
-    )
-
-    setV((old: any) => ({
-      ...old,
-      activityId: id,
-      activity: selected?.activity || ''
+      wbsIds: ids,
+      wbsId: ids[0] ?? '',
+      wbsCodes: codes,
+      wbsCode: codes.join(', '),
+      activityIds,
+      activityId: activityIds[0] ?? '',
+      activityNames,
+      activity: activityNames.join(', ')
     }))
   }
 
@@ -900,29 +903,26 @@ const [v, setV] = useState<any>(() => row ?? {})
 
             if (isWeekly && k === 'wbsCode') {
               return (
-                <label key={k}>
-                  WBS Code
-
-                  <select
-                    value={v.wbsCode || ''}
-                    onChange={e =>
-                      selectWbs(e.target.value)
-                    }
-                  >
-                    <option value="">
-                      Pilih WBS
-                    </option>
-
-                    {wbsRows.map((x: any) => (
-                      <option
-                        key={x.id}
-                        value={x.code}
-                      >
-                        {x.code} · {x.activity}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                <div className="wbs-field" key={k}>
+                  <span>WBS Code</span>
+                  <button type="button" className="wbs-picker-trigger" onClick={() => setWbsPickerOpen(open => !open)}>
+                    {selectedWbsIds.length ? `${selectedWbsIds.length} WBS dipilih` : 'Pilih satu atau beberapa WBS'}
+                    <span aria-hidden="true">⌄</span>
+                  </button>
+                  {wbsPickerOpen && <div className="wbs-multi-select">
+                    {wbsRows.filter((x: any) => x != null).map((x: any) => <label key={x.id}>
+                      <input type="checkbox" checked={selectedWbsIds.includes(x.id)} onChange={e => {
+                        const nextIds = e.target.checked
+                          ? [...selectedWbsIds, x.id]
+                          : selectedWbsIds.filter(id => id !== x.id)
+                        selectWbs(nextIds)
+                      }} />
+                      <span><b>{x.code || '—'}</b><small>{x.activity || 'Tanpa keterangan'}</small></span>
+                    </label>)}
+                    {!wbsRows.length && <small className="wbs-empty">Belum ada data WBS.</small>}
+                    <button type="button" className="wbs-done primary" onClick={() => setWbsPickerOpen(false)}>Selesai</button>
+                  </div>}
+                </div>
               )
             }
 
@@ -930,31 +930,13 @@ const [v, setV] = useState<any>(() => row ?? {})
               return (
                 <label key={k}>
                   Activity
-
-                  <select
-                    value={v.activityId || ''}
-                    onChange={e =>
-                      selectActivity(e.target.value)
-                    }
-                    disabled={!v.wbsCode}
-                  >
-                    <option value="">
-                      {v.wbsCode
-                        ? 'Pilih Activity'
-                        : 'Pilih WBS terlebih dahulu'}
-                    </option>
-
-                    {filteredActivities.map(
-                      (x: any) => (
-                        <option
-                          key={x.id}
-                          value={x.id}
-                        >
-                          {x.activity}
-                        </option>
-                      )
-                    )}
-                  </select>
+                  <div className="activity-autofill">
+                    {filteredActivities.length
+                      ? filteredActivities.map((x: any) => <div key={x.id}>{x.activity || '—'}</div>)
+                      : selectedWbsIds.length
+                        ? 'Belum ada Activity yang terhubung ke WBS pilihan.'
+                        : 'Pilih WBS untuk menampilkan Activity secara otomatis.'}
+                  </div>
                 </label>
               )
             }

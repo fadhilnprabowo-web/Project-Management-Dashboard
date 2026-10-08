@@ -1,6 +1,37 @@
 import { supabase } from './supabase'
 import type { Project, Row, Store } from '../types'
 
+const weeklyLinksMarker = '[[weekly-links]] '
+
+function readWeeklyLinks(notes: unknown) {
+  const source = String(notes ?? '')
+  const lines = source.split(/\r?\n/)
+  const markerIndex = lines.findIndex(line => line.startsWith(weeklyLinksMarker))
+  if (markerIndex < 0) {
+    return { notes: source, links: null as any }
+  }
+
+  try {
+    const links = JSON.parse(lines[markerIndex].slice(weeklyLinksMarker.length))
+    lines.splice(markerIndex, 1)
+    return { notes: lines.join('\n').trim(), links }
+  } catch {
+    return { notes: source, links: null as any }
+  }
+}
+
+function writeWeeklyLinks(notes: unknown, row: Row) {
+  const cleaned = readWeeklyLinks(notes).notes
+  const links = {
+    wbsIds: Array.isArray(row.wbsIds) ? row.wbsIds : [],
+    wbsCodes: Array.isArray(row.wbsCodes) ? row.wbsCodes : [],
+    activityIds: Array.isArray(row.activityIds) ? row.activityIds : [],
+    activityNames: Array.isArray(row.activityNames) ? row.activityNames : [],
+  }
+  if (!links.wbsIds.length && !links.activityIds.length) return cleaned || null
+  return `${cleaned ? `${cleaned}\n` : ''}${weeklyLinksMarker}${JSON.stringify(links)}`
+}
+
 /**
  * =========================================================
  * PROJECTS
@@ -248,18 +279,21 @@ export async function deleteWBS(id: string) {
  */
 
 export async function getActivities(projectId: string): Promise<Row[]> {
-  const { data, error } = await supabase
+  const [{ data, error }, { data: wbsData, error: wbsError }] = await Promise.all([
+    supabase
     .from('activities')
-    .select(`
-      *,
-      wbs:wbs_id (
-        wbs_code
-      )
-    `)
+    .select('*')
     .eq('project_id', projectId)
-    .order('start_date', { ascending: true })
+    .order('start_date', { ascending: true }),
+    supabase
+      .from('wbs')
+      .select('id, wbs_code')
+      .eq('project_id', projectId)
+  ])
 
   if (error) throw error
+  if (wbsError) throw wbsError
+  const wbsCodeById = new Map((wbsData ?? []).map((item: any) => [item.id, item.wbs_code ?? '']))
 
   return (data ?? []).map((x: any) => ({
     id: x.id,
@@ -269,7 +303,7 @@ export async function getActivities(projectId: string): Promise<Row[]> {
     activity: x.activity_name ?? '',
 
     wbsId: x.wbs_id ?? '',
-    wbsCode: x.wbs?.wbs_code ?? '',
+    wbsCode: wbsCodeById.get(x.wbs_id) ?? '',
 
     start: x.start_date ?? '',
     finish: x.finish_date ?? '',
@@ -368,45 +402,52 @@ export async function deleteActivity(id: string) {
  */
 
 export async function getProgress(projectId: string): Promise<Row[]> {
-  const { data, error } = await supabase
-    .from('weekly_progress')
-    .select(`
-      *,
-      wbs:wbs_id (
-        wbs_code
-      ),
-      activity:activity_id (
-        activity_name
-      )
-    `)
-    .eq('project_id', projectId)
-    .order('week_number', { ascending: true })
+  const [
+    { data, error },
+    { data: wbsData, error: wbsError },
+    { data: activityData, error: activityError },
+  ] = await Promise.all([
+    supabase.from('weekly_progress').select('*').eq('project_id', projectId).order('week_number', { ascending: true }),
+    supabase.from('wbs').select('id, wbs_code').eq('project_id', projectId),
+    supabase.from('activities').select('id, activity_name').eq('project_id', projectId),
+  ])
 
   if (error) throw error
+  if (wbsError) throw wbsError
+  if (activityError) throw activityError
 
-  return (data ?? []).map((x: any) => ({
-    id: x.id,
-    projectId: x.project_id,
+  const wbsById = new Map((wbsData ?? []).map((item: any) => [item.id, item.wbs_code ?? '']))
+  const activityById = new Map((activityData ?? []).map((item: any) => [item.id, item.activity_name ?? '']))
 
-    week: Number(x.week_number ?? 0),
+  return (data ?? []).map((x: any) => {
+    const parsed = readWeeklyLinks(x.notes)
+    const links = parsed.links ?? {}
+    const wbsIds = links.wbsIds?.length ? links.wbsIds : x.wbs_id ? [x.wbs_id] : []
+    const activityIds = links.activityIds?.length ? links.activityIds : x.activity_id ? [x.activity_id] : []
+    const wbsCodes = links.wbsCodes?.length ? links.wbsCodes : wbsIds.map((id: string) => wbsById.get(id)).filter(Boolean)
+    const activityNames = links.activityNames?.length ? links.activityNames : activityIds.map((id: string) => activityById.get(id)).filter(Boolean)
 
-    date: x.week_end ?? '',
-    weekStart: x.week_start ?? '',
-    weekEnd: x.week_end ?? '',
-
-    wbsId: x.wbs_id ?? '',
-    wbsCode: x.wbs?.wbs_code ?? '',
-
-    activityId: x.activity_id ?? '',
-    activity: x.activity?.activity_name ?? '',
-
-    plannedWeekly: Number(x.planned_progress ?? 0),
-    actualWeekly: Number(x.actual_progress ?? 0),
-
-    deviation: Number(x.variance ?? 0),
-
-    notes: x.notes ?? '',
-  }))
+    return {
+      id: x.id,
+      projectId: x.project_id,
+      week: Number(x.week_number ?? 0),
+      date: x.week_end ?? '',
+      weekStart: x.week_start ?? '',
+      weekEnd: x.week_end ?? '',
+      wbsId: wbsIds[0] ?? '',
+      wbsIds,
+      wbsCode: wbsCodes.join(', '),
+      wbsCodes,
+      activityId: activityIds[0] ?? '',
+      activityIds,
+      activity: activityNames.join(', '),
+      activityNames,
+      plannedWeekly: Number(x.planned_progress ?? 0),
+      actualWeekly: Number(x.actual_progress ?? 0),
+      deviation: Number(x.variance ?? 0),
+      notes: parsed.notes,
+    }
+  })
 }
 
 export async function insertProgress(row: Row) {
@@ -419,13 +460,13 @@ export async function insertProgress(row: Row) {
       week_start: row.weekStart || row.date || null,
       week_end: row.weekEnd || row.date || null,
 
-      wbs_id: row.wbsId || null,
-      activity_id: row.activityId || null,
+      wbs_id: row.wbsIds?.[0] || row.wbsId || null,
+      activity_id: row.activityIds?.[0] || row.activityId || null,
 
       planned_progress: Number(row.plannedWeekly || 0),
       actual_progress: Number(row.actualWeekly || 0),
 
-      notes: row.notes || null,
+      notes: writeWeeklyLinks(row.notes, row),
     })
     .select()
     .single()
@@ -443,13 +484,13 @@ export async function updateProgress(row: Row) {
       week_start: row.weekStart || row.date || null,
       week_end: row.weekEnd || row.date || null,
 
-      wbs_id: row.wbsId || null,
-      activity_id: row.activityId || null,
+      wbs_id: row.wbsIds?.[0] || row.wbsId || null,
+      activity_id: row.activityIds?.[0] || row.activityId || null,
 
       planned_progress: Number(row.plannedWeekly || 0),
       actual_progress: Number(row.actualWeekly || 0),
 
-      notes: row.notes || null,
+      notes: writeWeeklyLinks(row.notes, row),
     })
     .eq('id', row.id)
     .select()
@@ -892,7 +933,14 @@ export async function duplicateProjectWithData(
    */
 
   if (progressRows.length) {
-    const newProgressRows = progressRows.map((row: any) => ({
+    const newProgressRows = progressRows.map((row: any) => {
+      const oldWbsIds = row.wbsIds?.length ? row.wbsIds : row.wbsId ? [row.wbsId] : []
+      const oldActivityIds = row.activityIds?.length ? row.activityIds : row.activityId ? [row.activityId] : []
+      const newWbsIds = oldWbsIds.map((id: string) => wbsIdMap.get(id)).filter(Boolean)
+      const newActivityIds = oldActivityIds.map((id: string) => activityIdMap.get(id)).filter(Boolean)
+      const linkedRow = { ...row, wbsIds: newWbsIds, activityIds: newActivityIds }
+
+      return {
       id: crypto.randomUUID(),
 
       project_id: newProjectId,
@@ -910,15 +958,9 @@ export async function duplicateProjectWithData(
         row.date ||
         null,
 
-      wbs_id:
-        row.wbsId
-          ? wbsIdMap.get(row.wbsId) || null
-          : null,
+      wbs_id: newWbsIds[0] || null,
 
-      activity_id:
-        row.activityId
-          ? activityIdMap.get(row.activityId) || null
-          : null,
+      activity_id: newActivityIds[0] || null,
 
       planned_progress:
         Number(row.plannedWeekly || 0),
@@ -926,9 +968,9 @@ export async function duplicateProjectWithData(
       actual_progress:
         Number(row.actualWeekly || 0),
 
-      notes:
-        row.notes || null,
-    }))
+      notes: writeWeeklyLinks(row.notes, linkedRow),
+      }
+    })
 
     const { error } = await supabase
       .from('weekly_progress')
@@ -1295,10 +1337,10 @@ export async function restoreBackupToSupabase(
         null,
 
       wbs_id:
-        row.wbsId || null,
+        row.wbsIds?.[0] || row.wbsId || null,
 
       activity_id:
-        row.activityId || null,
+        row.activityIds?.[0] || row.activityId || null,
 
       planned_progress:
         Number(row.plannedWeekly || 0),
@@ -1307,7 +1349,7 @@ export async function restoreBackupToSupabase(
         Number(row.actualWeekly || 0),
 
       notes:
-        row.notes || null,
+        writeWeeklyLinks(row.notes, row),
     }))
 
     const { error } = await supabase
