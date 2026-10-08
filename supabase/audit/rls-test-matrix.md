@@ -6,7 +6,8 @@ Run only after the live schema and existing policies are reviewed, owner mapping
 
 | Test | Expected result | Result |
 |---|---|---|
-| User A lists projects | Only A-owned projects | NOT RUN |
+| Different accounts show separated project lists | Each account sees its own project list | USER REPORT: works; not independently observed |
+| User A lists projects | Only A-owned projects | PARTIALLY COVERED by user report |
 | User B lists projects | Only B-owned projects | NOT RUN |
 | User A reads project B | Invisible / denied | NOT RUN |
 | User A inserts a project with B's `owner_id` | Denied | NOT RUN |

@@ -32,6 +32,10 @@ Run the read-only queries in [`schema-and-data-audit.sql`](schema-and-data-audit
 | Storage buckets and `storage.objects` policies | UNKNOWN | Not inspected. Application documentation images appear to be stored in project JSON as data URLs in source; this does not prove that Storage is unused in the live project. |
 | `auth.users` | PARTIALLY OBSERVED (user-provided screenshot) | Screenshot shows one Auth user row with `id`, `email`, and `created_at`. The user explicitly confirmed all existing projects belong to that account. This is user-provided evidence, not a direct database query by this audit. |
 
+## Proposed Weekly Progress relation
+
+[`20261008000300_normalize_weekly_progress_wbs.sql`](../migrations/20261008000300_normalize_weekly_progress_wbs.sql) adds a `weekly_progress_wbs` junction table with same-project owner RLS and a transaction-safe RPC for replacing a record's selected WBS links. It also backfills links from the prior `wbs_id` field and legacy notes marker. The app keeps that notes format as a compatibility fallback until this migration is applied. The migration has not been run; its type/schema guards must pass first.
+
 ## Source-only security observations (not live verification)
 
 - `src/services/database.ts` filters project reads/updates/deletes by `owner_id` and uses `project_id` for child data. Frontend filters are not a security boundary.

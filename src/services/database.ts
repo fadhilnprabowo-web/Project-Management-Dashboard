@@ -2,6 +2,7 @@ import { supabase } from './supabase'
 import type { Project, Row, Store } from '../types'
 
 const weeklyLinksMarker = '[[weekly-links]] '
+let weeklyLinkRpcAvailable: boolean | null = null
 
 async function requireCurrentUserId() {
   const { data, error } = await supabase.auth.getUser()
@@ -35,7 +36,6 @@ function writeWeeklyLinks(notes: unknown, row: Row) {
     activityIds: Array.isArray(row.activityIds) ? row.activityIds : [],
     activityNames: Array.isArray(row.activityNames) ? row.activityNames : [],
   }
-  if (!links.wbsIds.length && !links.activityIds.length) return cleaned || null
   return `${cleaned ? `${cleaned}\n` : ''}${weeklyLinksMarker}${JSON.stringify(links)}`
 }
 
@@ -434,6 +434,27 @@ export async function getProgress(projectId: string): Promise<Row[]> {
   if (wbsError) throw wbsError
   if (activityError) throw activityError
 
+  let normalizedLinks: Map<string, string[]> | null = null
+  const progressIds = (data ?? []).map((item: any) => item.id).filter(Boolean)
+  if (progressIds.length) {
+    const { data: linkData, error: linkError } = await supabase
+      .from('weekly_progress_wbs')
+      .select('weekly_progress_id, wbs_id')
+      .in('weekly_progress_id', progressIds)
+
+    if (linkError) {
+      const missingTable = linkError.code === '42P01' || linkError.code === 'PGRST205'
+      if (!missingTable) throw linkError
+    } else {
+      normalizedLinks = new Map()
+      for (const link of linkData ?? []) {
+        const current = normalizedLinks.get(link.weekly_progress_id) ?? []
+        current.push(link.wbs_id)
+        normalizedLinks.set(link.weekly_progress_id, current)
+      }
+    }
+  }
+
   const wbsById = new Map((wbsData ?? []).map((item: any) => [item.id, {
     code: item.wbs_code ?? '',
     activity: item.wbs_name ?? '',
@@ -443,7 +464,14 @@ export async function getProgress(projectId: string): Promise<Row[]> {
   return (data ?? []).map((x: any) => {
     const parsed = readWeeklyLinks(x.notes)
     const links = parsed.links ?? {}
-    const wbsIds = links.wbsIds?.length ? links.wbsIds : x.wbs_id ? [x.wbs_id] : []
+    const normalizedWbsIds = normalizedLinks?.get(x.id) ?? []
+    const wbsIds = Array.isArray(links.wbsIds)
+      ? links.wbsIds
+      : normalizedWbsIds.length
+        ? normalizedWbsIds
+        : x.wbs_id
+          ? [x.wbs_id]
+          : []
     const activityIds = links.activityIds?.length ? links.activityIds : x.activity_id ? [x.activity_id] : []
     const wbsCodes = links.wbsCodes?.length
       ? links.wbsCodes
@@ -478,6 +506,45 @@ export async function getProgress(projectId: string): Promise<Row[]> {
   })
 }
 
+async function syncProgressWbsLinks(progressId: string, row: Row) {
+  if (weeklyLinkRpcAvailable === false) return false
+  const wbsIds = [...new Set(
+    (Array.isArray(row.wbsIds) ? row.wbsIds : row.wbsId ? [row.wbsId] : [])
+      .filter((id: unknown): id is string => typeof id === 'string' && Boolean(id))
+  )]
+  const { error } = await supabase.rpc('set_weekly_progress_wbs_links', {
+    p_progress_id: progressId,
+    p_wbs_ids: wbsIds,
+  })
+
+  if (error) {
+    // Older deployments continue to store the same link list in notes until
+    // the additive junction-table migration has been applied.
+    if (error.code === 'PGRST202' || error.code === '42883' || error.code === '42P01') {
+      weeklyLinkRpcAvailable = false
+    }
+    console.warn('Weekly WBS relation table is not synchronized; notes fallback remains active.', error)
+    return false
+  }
+
+  weeklyLinkRpcAvailable = true
+
+  const cleanNotes = readWeeklyLinks(row.notes).notes || null
+  const { error: notesError } = await supabase
+    .from('weekly_progress')
+    .update({ notes: cleanNotes })
+    .eq('id', progressId)
+
+  if (notesError) {
+    // The junction data is already saved. Leaving the compatible notes marker
+    // is safe; the loader prefers it until a later successful save.
+    console.warn('Weekly WBS relation saved but legacy notes marker could not be removed.', notesError)
+    return false
+  }
+
+  return true
+}
+
 export async function insertProgress(row: Row) {
   const { data, error } = await supabase
     .from('weekly_progress')
@@ -500,6 +567,8 @@ export async function insertProgress(row: Row) {
     .single()
 
   if (error) throw error
+
+  await syncProgressWbsLinks(data.id, row)
 
   return data
 }
@@ -525,6 +594,8 @@ export async function updateProgress(row: Row) {
     .single()
 
   if (error) throw error
+
+  await syncProgressWbsLinks(row.id, row)
 
   return data
 }
@@ -831,8 +902,15 @@ export async function insertRowsBatch(table: ImportTable, rows: Row[]) {
       status: row.status || 'Planned',
     }
   })
-  const { data, error } = await supabase.from(table).insert(payload).select('id')
+  const { data, error } = await supabase.from(table).insert(payload).select(table === 'progress' ? 'id, week_number' : 'id')
   if (error) throw error
+  if (table === 'progress' && data) {
+    const rowByWeek = new Map(rows.map(row => [Number(row.week), row]))
+    await Promise.all(data.map((saved: any) => {
+      const sourceRow = rowByWeek.get(Number(saved.week_number))
+      return sourceRow ? syncProgressWbsLinks(saved.id, sourceRow) : Promise.resolve(false)
+    }))
+  }
   return data ?? []
 }
 
@@ -1087,11 +1165,21 @@ export async function duplicateProjectWithData(
       }
     })
 
-    const { error } = await supabase
+    const { data: insertedProgress, error } = await supabase
       .from('weekly_progress')
       .insert(newProgressRows)
+      .select('id')
 
     if (error) throw error
+    await Promise.all((insertedProgress ?? []).map((saved: any, index: number) => {
+      const oldWbsIds = progressRows[index].wbsIds?.length ? progressRows[index].wbsIds : progressRows[index].wbsId ? [progressRows[index].wbsId] : []
+      const linkedRow = {
+        ...progressRows[index],
+        wbsIds: oldWbsIds.map((id: string) => wbsIdMap.get(id)).filter(Boolean),
+        notes: newProgressRows[index].notes,
+      }
+      return syncProgressWbsLinks(saved.id, linkedRow)
+    }))
   }
 
 
@@ -1465,13 +1553,19 @@ export async function restoreBackupToSupabase(
         writeWeeklyLinks(row.notes, row),
     }))
 
-    const { error } = await supabase
+    const { data: restoredProgress, error } = await supabase
       .from('weekly_progress')
       .upsert(payload, {
         onConflict: 'id',
       })
+      .select('id')
 
     if (error) throw error
+    const progressById = new Map((backup.progress ?? []).map((row: any) => [row.id, row]))
+    await Promise.all((restoredProgress ?? []).map((saved: any) => {
+      const row = progressById.get(saved.id)
+      return row ? syncProgressWbsLinks(saved.id, row) : Promise.resolve(false)
+    }))
   }
 
 

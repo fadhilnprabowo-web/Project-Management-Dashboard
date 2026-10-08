@@ -3,16 +3,6 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { HashRouter, useNavigate } from 'react-router-dom'
 import {
-  Area,
-  AreaChart,
-  CartesianGrid,
-  Legend,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis
-} from 'recharts'
-import {
   Activity,
   AlertTriangle,
   Boxes,
@@ -34,7 +24,6 @@ import {
   Printer,
   CalendarDays
 } from 'lucide-react'
-import * as XLSX from 'xlsx'
 
 import type { Project, Row, Store } from './types'
 import { emptyStore, loadPreferences, savePreferences } from './services/storage'
@@ -75,12 +64,16 @@ import {
   jsonOut,
   pdfOut,
   projectWorkbook,
+  readSpreadsheet,
   reportPdf,
-  safe
+  safe,
+  templateOut
 } from './exports/files'
 
 import './style.css'
 import { formatPercent, parseLocaleNumber } from './utils/format'
+
+const LazyProgressChart = React.lazy(() => import('./components/ProgressChart'))
 
 import MonthlyRecap from './components/MonthlyRecap'
 import WeeklyRecap from './components/WeeklyRecap'
@@ -234,13 +227,20 @@ const label = (k: string) =>
 const isIssueComplete = (status: unknown) =>
   ['resolved', 'closed', 'complete', 'completed'].includes(String(status || '').trim().toLowerCase())
 
-function validateProgressRow(row: Row, existing: Row[], ignoredId?: string) {
+function validateProgressRow(row: Row, existing: Row[], projectWbs: Row[], ignoredId?: string) {
   const week = parseLocaleNumber(row.week)
   if (!Number.isInteger(week) || week < 1) return 'Minggu harus berupa angka bulat minimal 1.'
   if (!isValidDateInput(row.date)) return 'Tanggal progres harus diisi dengan format tanggal yang valid.'
   for (const [key, labelText] of [['plannedWeekly', 'Planned Weekly'], ['actualWeekly', 'Actual Weekly']] as const) {
     const value = parseLocaleNumber(row[key])
     if (!Number.isFinite(value) || value < 0 || value > 100) return `${labelText} harus berada di antara 0 dan 100%.`
+  }
+  const selectedWbsIds = [...new Set(Array.isArray(row.wbsIds) ? row.wbsIds : row.wbsId ? [row.wbsId] : [])]
+  const projectWbsById = new Map(projectWbs.filter(item => item.projectId === row.projectId).map(item => [item.id, item]))
+  for (const id of selectedWbsIds) {
+    const linkedWbs = projectWbsById.get(id)
+    if (!linkedWbs) return 'WBS yang dipilih tidak ditemukan pada project aktif. Muat ulang data lalu pilih kembali.'
+    if (!String(linkedWbs.activity || '').trim()) return `Keterangan Activity untuk WBS ${linkedWbs.code || id} belum diisi.`
   }
   if (existing.some(item => item.id !== ignoredId && item.projectId === row.projectId && Number(item.week) === week)) {
     return `Minggu ${week} sudah memiliki data Weekly Progress untuk project ini.`
@@ -252,6 +252,13 @@ function validateProgressRow(row: Row, existing: Row[], ignoredId?: string) {
     .sort((a, b) => Number(a.week) - Number(b.week))
   if (ordered.some((item, index) => index > 0 && String(ordered[index - 1].date) > String(item.date))) {
     return 'Tanggal progres harus berurutan sesuai nomor minggu.'
+  }
+  for (const key of ['plannedWeekly', 'actualWeekly'] as const) {
+    const cumulative = existing
+      .filter(item => item.id !== ignoredId && item.projectId === row.projectId)
+      .reduce((total, item) => total + parseLocaleNumber(item[key]), 0)
+      + parseLocaleNumber(row[key])
+    if (cumulative > 100.000001) return `Total kumulatif ${key === 'plannedWeekly' ? 'rencana' : 'aktual'} tidak boleh melebihi 100%.`
   }
   return ''
 }
@@ -321,6 +328,8 @@ function App() {
   const [search, setSearch] = useState('')
   const [modal, setModal] = useState<Row | null>(null)
   const [toast, setToast] = useState('')
+  const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'error'>('saved')
+  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null)
   const [imp, setImp] = useState<any>(null)
   const [issueFilter, setIssueFilter] = useState('All')
 
@@ -329,6 +338,7 @@ function App() {
   const projectDrafts = useRef<Record<string, Project>>({})
   const projectSaveTimers = useRef<Record<string, number>>({})
   const projectSaveQueue = useRef<Promise<void>>(Promise.resolve())
+  const saveRevision = useRef(0)
   const sessionRef = useRef(session)
   sessionRef.current = session
   const navigate = useNavigate()
@@ -435,6 +445,23 @@ function App() {
     setToast(m)
     setTimeout(() => setToast(''), 2500)
   }
+  const runExport = (task: Promise<unknown>, message = 'Export gagal. Silakan coba lagi.') => {
+    void task.catch(error => {
+      console.error('EXPORT ERROR:', error)
+      notify(message)
+    })
+  }
+
+  const beginSave = () => {
+    const revision = ++saveRevision.current
+    setSaveStatus('saving')
+    return revision
+  }
+  const finishSave = (revision: number, success: boolean) => {
+    if (revision !== saveRevision.current) return
+    setSaveStatus(success ? 'saved' : 'error')
+    if (success) setLastSavedAt(new Date())
+  }
 
   const rows = (
     k: 'wbs' | 'progress' | 'activities' | 'issues' | 'materials'
@@ -522,6 +549,7 @@ const goProject=(id:string)=>{setPid(id);setDb(s=>{const next={...s,settings:{..
   }
   projectDrafts.current[draftKey] = updated
   setDb(s => ({ ...s, projects: s.projects.map(project => project.id === pid ? updated : project) }))
+  const saveRevisionAtEdit = beginSave()
 
   window.clearTimeout(projectSaveTimers.current[draftKey])
   projectSaveTimers.current[draftKey] = window.setTimeout(() => {
@@ -532,9 +560,11 @@ const goProject=(id:string)=>{setPid(id);setDb(s=>{const next={...s,settings:{..
         if (sessionRef.current?.user?.id !== ownerId) throw new Error('Session changed before project save.')
         await updateProject(snapshot)
         if (projectDrafts.current[draftKey] === snapshot) delete projectDrafts.current[draftKey]
+        finishSave(saveRevisionAtEdit, true)
       })
       .catch(error => {
         console.error('PROJECT UPDATE ERROR:', error)
+        finishSave(saveRevisionAtEdit, false)
         notify('Project belum tersimpan. Periksa koneksi, lalu ubah kembali atau coba lagi.')
       })
     delete projectSaveTimers.current[draftKey]
@@ -542,9 +572,10 @@ const goProject=(id:string)=>{setPid(id);setDb(s=>{const next={...s,settings:{..
 };
 const saveRow = async (r: Row) => {
   if (!tableKey) return
+  const saveRevisionAtStart = beginSave()
 
   if (tableKey === 'progress') {
-    const validationError = validateProgressRow(r, db.progress, r.id)
+      const validationError = validateProgressRow(r, db.progress, rows('wbs'), r.id)
     if (validationError) {
       notify(validationError)
       return
@@ -608,15 +639,18 @@ const saveRow = async (r: Row) => {
     }))
 
     setModal(null)
+    finishSave(saveRevisionAtStart, true)
     notify(exists ? 'Data berhasil diperbarui' : 'Data berhasil ditambahkan')
   } catch (error) {
     console.error('SAVE ROW ERROR:', error)
+    finishSave(saveRevisionAtStart, false)
     notify('Gagal menyimpan data ke Supabase')
   }
 }
 
 const remove = async (id: string) => {
   if (!tableKey || !confirm('Delete this record?')) return
+  const saveRevisionAtStart = beginSave()
   try {
     if (tableKey === 'wbs') await deleteWBS(id)
     if (tableKey === 'activities') await deleteActivity(id)
@@ -624,9 +658,11 @@ const remove = async (id: string) => {
     if (tableKey === 'issues') await deleteIssue(id)
     if (tableKey === 'materials') await deleteMaterial(id)
     setDb(s => ({ ...s, [tableKey]: s[tableKey].filter(x => x.id !== id) }))
+    finishSave(saveRevisionAtStart, true)
     notify('Data berhasil dihapus')
   } catch (error) {
     console.error('DELETE ROW ERROR:', error)
+    finishSave(saveRevisionAtStart, false)
     notify('Gagal menghapus data dari Supabase')
   }
 }
@@ -666,7 +702,6 @@ const importExcelRows = async (
   })
 
   const projectWbsRows = db.wbs.filter(item => item.projectId === pid)
-  const projectActivityRows = db.activities.filter(item => item.projectId === pid)
   const wbsByCode = new Map(projectWbsRows.map(item => [String(item.code).trim(), item]))
   const dateIsValid = (value: unknown) => {
     return isValidDateInput(value)
@@ -707,13 +742,12 @@ const importExcelRows = async (
         notify(`Baris ${index + 2}: WBS Code ${missing} tidak ditemukan pada project aktif.`)
         return
       }
-      const linkedActivities = projectActivityRows.filter(activity => linkedWbs.some(wbs => wbs && (activity.wbsId === wbs.id || String(activity.wbsCode) === String(wbs.code))))
       row.wbsIds = linkedWbs.map(item => item!.id)
       row.wbsCodes = linkedWbs.map(item => String(item!.code))
       row.wbsId = row.wbsIds[0] || ''
-      row.activityIds = linkedActivities.map(item => item.id)
-      row.activityNames = linkedActivities.map(item => String(item.activity || '')).filter(Boolean)
-      row.activityId = row.activityIds[0] || ''
+      row.activityIds = []
+      row.activityNames = [...new Set(linkedWbs.map(item => String(item!.activity || '').trim()).filter(Boolean))]
+      row.activityId = ''
       row.activity = row.activityNames.join(', ')
     }
     if (key === 'issues' && !String(row.issue || '').trim()) {
@@ -757,10 +791,20 @@ const importExcelRows = async (
   }
 
   if (key === 'progress') {
+    for (const [field, title] of [['plannedWeekly', 'rencana'], ['actualWeekly', 'aktual']] as const) {
+      const total = db.progress
+        .filter(item => item.projectId === pid)
+        .reduce((sum, item) => sum + parseLocaleNumber(item[field]), 0)
+        + preparedRows.reduce((sum, item) => sum + parseLocaleNumber(item[field]), 0)
+      if (total > 100.000001) {
+        notify(`Total kumulatif ${title} dari data lama dan file import melebihi 100%.`)
+        return
+      }
+    }
     const seenWeeks = new Set<number>()
     const seenDates = new Set<string>()
     for (const [index, row] of preparedRows.entries()) {
-      const message = validateProgressRow(row, db.progress)
+      const message = validateProgressRow(row, db.progress, projectWbsRows)
       const week = Number(row.week)
       const date = String(row.date)
       if (message || seenWeeks.has(week) || seenDates.has(date)) {
@@ -777,6 +821,7 @@ const importExcelRows = async (
     }
   }
 
+  const saveRevisionAtStart = beginSave()
   try {
     const insertedRows = await insertRowsBatch(key, preparedRows)
     const imported = insertedRows.length
@@ -786,9 +831,11 @@ const importExcelRows = async (
     setDb(refreshed)
     setPid(selectedProject)
     setImp(null)
+    finishSave(saveRevisionAtStart, true)
     notify(`${imported} record berhasil diimport ke Supabase`)
   } catch (error) {
     console.error('IMPORT EXCEL ERROR:', error)
+    finishSave(saveRevisionAtStart, false)
     notify('Import gagal. Periksa format kolom Excel.')
     try {
       const refreshed = await loadFromSupabase()
@@ -802,12 +849,15 @@ const importExcelRows = async (
 
 const resolveIssue = async (row: Row) => {
   const resolved = { ...row, status: 'Resolved' }
+  const saveRevisionAtStart = beginSave()
   try {
     await updateIssue(resolved)
     setDb(s => ({ ...s, issues: s.issues.map(issue => issue.id === row.id ? resolved : issue) }))
+    finishSave(saveRevisionAtStart, true)
     notify('Issue berhasil diselesaikan')
   } catch (error) {
     console.error('RESOLVE ISSUE ERROR:', error)
+    finishSave(saveRevisionAtStart, false)
     notify('Gagal memperbarui issue di Supabase')
   }
 }
@@ -815,6 +865,7 @@ const addProject = async () => {
   const name = prompt('Project name')
 
   if (!name) return
+  const saveRevisionAtStart = beginSave()
 
   const project: Project = {
     id: crypto.randomUUID(),
@@ -864,13 +915,16 @@ const addProject = async () => {
     setPid(inserted.id)
     go('Project Settings')
 
+    finishSave(saveRevisionAtStart, true)
     notify('Project berhasil dibuat')
   } catch (error) {
     console.error(error)
+    finishSave(saveRevisionAtStart, false)
     notify('Gagal membuat project')
   }
 };
 const duplicateProject = async (project: Project) => {
+  const saveRevisionAtStart = beginSave()
   try {
     const duplicated = await duplicateProjectWithData(
       project,
@@ -886,13 +940,16 @@ const duplicateProject = async (project: Project) => {
     setDb(refreshed)
     setPid(duplicated.id)
     go('Dashboard')
+    finishSave(saveRevisionAtStart, true)
     notify('Project dan seluruh data berhasil diduplikasi')
   } catch (error) {
     console.error('DUPLICATE PROJECT ERROR:', error)
+    finishSave(saveRevisionAtStart, false)
     notify('Gagal duplicate project dan data')
   }
 }
 const archiveProject = async (project: Project) => {
+  const saveRevisionAtStart = beginSave()
   try {
     const updated: Project = {
       ...project,
@@ -900,14 +957,17 @@ const archiveProject = async (project: Project) => {
     }
     await updateProject(updated)
     setDb(s => ({ ...s, projects: s.projects.map(x => x.id === project.id ? updated : x) }))
+    finishSave(saveRevisionAtStart, true)
     notify(updated.archived ? 'Project diarsipkan' : 'Project dikembalikan')
   } catch (error) {
     console.error('ARCHIVE PROJECT ERROR:', error)
+    finishSave(saveRevisionAtStart, false)
     notify('Gagal mengubah status archive')
   }
 }
 const deleteProjectFromSupabase = async (project: Project) => {
   if (!confirm(`Delete project "${project.name}"?\n\nSemua WBS, Activities, Progress, Issues, dan Materials project ini juga akan terhapus.`)) return
+  const saveRevisionAtStart = beginSave()
   try {
     await deleteProject(project.id)
     setDb(s => ({
@@ -930,13 +990,15 @@ const deleteProjectFromSupabase = async (project: Project) => {
       })
       go('Projects')
     }
+    finishSave(saveRevisionAtStart, true)
     notify('Project berhasil dihapus')
   } catch (error) {
     console.error('DELETE PROJECT ERROR:', error)
+    finishSave(saveRevisionAtStart, false)
     notify('Gagal menghapus project')
   }
 }
-const exportReport=()=>p&&void reportPdf(p,{Project:p.name,'Project Number':p.number,Client:p.client,Status:p.status,'Planned Progress':formatPercent(planned),'Actual Progress':formatPercent(actual),'Deviation':formatPercent(dev),'WBS Items':rows('wbs').length,'Open Issues':rows('issues').filter(x=>!isIssueComplete(x.status)).length},chart.current,`${safe(p.name)}_Project_Report.pdf`);const exportCurve=(t:string)=>{if(!p)return;try{if(t==='png'&&chart.current)void elementPng(chart.current,`${safe(p.name)}_S-Curve.png`);if(t==='svg'&&chart.current)chartSvg(chart.current,`${safe(p.name)}_S-Curve.svg`);if(t==='pdf'&&report.current)void pdfOut(report.current,`${safe(p.name)}_S-Curve.pdf`,'S-Curve',p);if(t==='excel')excelOut(sc,`${safe(p.name)}_S-Curve.xlsx`,'S-Curve');if(t==='print')window.print()}catch(e){notify('Export failed: '+String(e))}};
+const exportReport=()=>p&&runExport(reportPdf(p,{Project:p.name,'Project Number':p.number,Client:p.client,Status:p.status,'Planned Progress':formatPercent(planned),'Actual Progress':formatPercent(actual),'Deviation':formatPercent(dev),'WBS Items':rows('wbs').length,'Open Issues':rows('issues').filter(x=>!isIssueComplete(x.status)).length},chart.current,`${safe(p.name)}_Project_Report.pdf`),'PDF report gagal dibuat.');const exportCurve=(t:string)=>{if(!p)return;try{if(t==='png'&&chart.current)runExport(elementPng(chart.current,`${safe(p.name)}_S-Curve.png`));if(t==='svg'&&chart.current)chartSvg(chart.current,`${safe(p.name)}_S-Curve.svg`);if(t==='pdf'&&report.current)runExport(pdfOut(report.current,`${safe(p.name)}_S-Curve.pdf`,'S-Curve',p),'PDF S-Curve gagal dibuat.');if(t==='excel')runExport(excelOut(sc,`${safe(p.name)}_S-Curve.xlsx`,'S-Curve'));if(t==='print')window.print()}catch(e){notify('Export gagal: '+String(e))}};
 if (authLoading) return <div className="auth-loading">Loading...</div>
 if (!session) return <LoginPage onLogin={() => { void getSession().then(setSession) }} />
 if (loading || (session?.user?.id && loadedUserId !== session.user.id && !loadError)) return <div className="auth-loading">Loading project data...</div>
@@ -1000,12 +1062,12 @@ return <div className={`app ${sidebarOpen ? 'sidebar-is-open' : 'sidebar-is-clos
       </div>
     </div>
   </div>
-)}{tableKey&&<><PageHead title={page} subtitle={page === 'Weekly Progress' ? 'Weekly progress diisi sebagai progres inkremental per minggu; S-Curve menjumlahkan nilai mingguan.' : `Manage ${page.toLowerCase()} for this project.`} action="Add record" onAction={()=>setModal({id:crypto.randomUUID(),projectId:pid})}/><div className="toolbar"><span><Search size={16}/><input placeholder="Search records" value={search} onChange={e=>setSearch(e.target.value)}/></span><button className="secondary" onClick={()=>{const w=XLSX.utils.book_new();XLSX.utils.book_append_sheet(w,XLSX.utils.json_to_sheet([Object.fromEntries(cols.map(k=>[label(k),'']))]),page);XLSX.writeFile(w,`${page}_template.xlsx`)}}>Template</button><label className="secondary">Import<input type="file" accept=".xlsx,.xls,.csv" onChange={e=>{const f=e.target.files?.[0];if(!f||!tableKey)return;const rd=new FileReader();rd.onload=()=>{try{const w=XLSX.read(rd.result,{type:'array',cellDates:true});const sheet=w.Sheets[w.SheetNames[0]];const importedRows=XLSX.utils.sheet_to_json(sheet);setImp({key:tableKey,rows:importedRows})}catch{notify('Excel import failed')}};rd.readAsArrayBuffer(f);e.currentTarget.value=''}}/></label><button className="secondary" onClick={()=>excelOut(shown,`${page}.xlsx`,page)}>Excel</button><button className="secondary" onClick={()=>csvOut(shown,`${page}.csv`)}>CSV</button><button className="secondary" onClick={()=>report.current&&void pdfOut(report.current,`${page}.pdf`,page,p)}>PDF</button></div><div className={`panel table-panel ${page==='Weekly Progress'?'weekly-progress-panel':''}`} ref={report}><div className="table-scroll"><table><thead><tr>{cols.map(k=><th key={k}>{label(k)}</th>)}<th>Actions</th></tr></thead><tbody>{shown.map(r=><tr key={r.id}>{cols.map(k=><td key={k}>{['planned','actual','plannedWeekly','actualWeekly','weight','progress'].includes(k)?formatPercent(r[k]):r[k]??'-'}</td>)}<td>{page==='Issues'&&!isIssueComplete(r.status)&&<button className='resolve-btn' onClick={()=>void resolveIssue(r)}>Mark Resolved</button>}<button className='icon' onClick={()=>setModal(r)}><Edit3 size={15}/></button><button className="icon" onClick={()=>remove(r.id)}><Trash2 size={15}/></button></td></tr>)}{!shown.length&&<tr><td colSpan={cols.length+1}>No {page.toLowerCase()} data available.</td></tr>}</tbody></table></div>{shown.length} records  |  synced with Supabase</div></>}
+)}{tableKey&&<><PageHead title={page} subtitle={page === 'Weekly Progress' ? 'Weekly progress diisi sebagai progres inkremental per minggu; S-Curve menjumlahkan nilai mingguan.' : `Manage ${page.toLowerCase()} for this project.`} action="Add record" onAction={()=>setModal({id:crypto.randomUUID(),projectId:pid})}/><div className="toolbar"><span><Search size={16}/><input placeholder="Search records" value={search} onChange={e=>setSearch(e.target.value)}/></span><button className="secondary" onClick={()=>runExport(templateOut(cols.map(k=>label(k)),page),'Template gagal dibuat.')}>Template</button><label className="secondary">Import<input type="file" accept=".xlsx,.xls,.csv" onChange={e=>{const f=e.target.files?.[0];if(!f||!tableKey)return;const rd=new FileReader();rd.onload=async()=>{try{const importedRows=await readSpreadsheet(rd.result as ArrayBuffer);setImp({key:tableKey,rows:importedRows})}catch{notify('Excel import failed')}};rd.readAsArrayBuffer(f);e.currentTarget.value=''}}/></label><button className="secondary" onClick={()=>runExport(excelOut(shown,`${page}.xlsx`,page))}>Excel</button><button className="secondary" onClick={()=>runExport(csvOut(shown,`${page}.csv`))}>CSV</button><button className="secondary" onClick={()=>report.current&&runExport(pdfOut(report.current,`${page}.pdf`,page,p),'PDF gagal dibuat.')}>PDF</button></div><div className={`panel table-panel ${page==='Weekly Progress'?'weekly-progress-panel':''}`} ref={report}><div className="table-scroll"><table><thead><tr>{cols.map(k=><th key={k}>{label(k)}</th>)}<th>Actions</th></tr></thead><tbody>{shown.map(r=><tr key={r.id}>{cols.map(k=><td key={k}>{['planned','actual','plannedWeekly','actualWeekly','weight','progress'].includes(k)?formatPercent(r[k]):r[k]??'-'}</td>)}<td>{page==='Issues'&&!isIssueComplete(r.status)&&<button className='resolve-btn' onClick={()=>void resolveIssue(r)}>Mark Resolved</button>}<button className='icon' onClick={()=>setModal(r)}><Edit3 size={15}/></button><button className="icon" onClick={()=>remove(r.id)}><Trash2 size={15}/></button></td></tr>)}{!shown.length&&<tr><td colSpan={cols.length+1}>No {page.toLowerCase()} data available.</td></tr>}</tbody></table></div>{shown.length} records  |  synced with Supabase</div></>}
 {page==='S-Curve'&&<><PageHead title="S-Curve Analysis" subtitle="Planned and actual cumulative progress with deviation."/>{duplicateProgressWeeks.length>0&&<div className="panel" role="alert">Ditemukan nomor minggu ganda: {duplicateProgressWeeks.join(', ')}. Data lama tidak diubah; periksa Weekly Progress agar kurva tidak menjumlahkan entri ganda.</div>}<div className="kpis"><Kpi title="Total Persentase Rencana" value={formatPercent(planned)}/><Kpi title="Total Persentase Aktual" value={formatPercent(actual)}/><Kpi title="Selisih Aktual - Rencana" value={formatPercent(dev)}/></div><div className="panel" ref={report}><div className="line"><PanelTitle title="Progress curve"/>{['png','svg','pdf','excel'].map(x=><button className="secondary" key={x} onClick={()=>exportCurve(x)}>{x.toUpperCase()}</button>)}<button className="secondary" onClick={()=>window.print()}><Printer size={15}/> Print</button></div><Chart data={sc} refEl={chart} large/><SCurveBreakdownTable data={sc}/></div></>}
 {page==='Dokumentasi Pekerjaan'&&p&&<WorkDocumentation project={p} entries={p.documentation||[]} onChange={items=>editProject('documentation',items)}/>} {page==='Berita Acara'&&p&&<BeritaAcara project={p} progress={actual} onChange={editProject}/>} {page==='Weekly Recap'&&p&&<WeeklyRecap project={p} progress={rows('progress')}/>} {page==='Monthly Recap'&&p&&<MonthlyRecap project={p} progress={rows('progress')}/>}{page==='Project Settings'&&p&&<ProjectForm p={p} change={editProject}/>}{page==='Approval'&&p&&<ApprovalForm p={p} change={editProject}/>}{page==='Company Branding'&&p&&<BrandForm p={p} change={editProject} notify={notify}/>}
-{page==='Export Center'&&<><PageHead title="Export Center" subtitle="Generate project files from latest data."/><div className="cards">{[['Project Excel',()=>p&&projectWorkbook(p,db)],['Project JSON',()=>p&&jsonOut({project:p,wbs:rows('wbs'),progress:rows('progress'),activities:rows('activities'),issues:rows('issues'),materials:rows('materials')},`${safe(p.name)}.json`)],['Full backup JSON',()=>jsonOut(db,'Project_Backup.json')],['Project report PDF',exportReport]].map(([n,f]:any)=><div className="panel"><h3>{n}</h3><button className="primary" onClick={f}>Download</button></div>)}</div></>}
+{page==='Export Center'&&<><PageHead title="Export Center" subtitle="Generate project files from latest data."/><div className="cards">{[['Project Excel',()=>p&&runExport(projectWorkbook(p,db))],['Project JSON',()=>p&&jsonOut({project:p,wbs:rows('wbs'),progress:rows('progress'),activities:rows('activities'),issues:rows('issues'),materials:rows('materials')},`${safe(p.name)}.json`)],['Full backup JSON',()=>jsonOut(db,'Project_Backup.json')],['Project report PDF',exportReport]].map(([n,f]:any)=><div className="panel"><h3>{n}</h3><button className="primary" onClick={f}>Download</button></div>)}</div></>}
 {page === 'Backup & Restore' && <><PageHead title="Backup & Restore" subtitle="Backup and restore project data from Supabase."/><div className="panel"><h3>Export full backup</h3><p>Export seluruh project dan data WBS, Activities, Weekly Progress, Issues, dan Materials.</p><button className="primary" onClick={()=>jsonOut(db,'Project_Dashboard_Backup.json')}>Export backup</button></div><div className="panel"><h3>Restore backup</h3><p>Restore melakukan validasi relasi sebelum upsert. Operasi lintas tabel belum transaksional; simpan backup terlebih dahulu.</p><input type="file" accept=".json" onChange={e=>{const f=e.target.files?.[0];if(!f)return;const rd=new FileReader();rd.onload=async()=>{try{const backup=JSON.parse(String(rd.result));validateBackup(backup);const confirmed=confirm(`Restore ${backup.projects.length} project(s) ke Supabase?\n\nData dengan ID yang sama akan diperbarui.`);if(!confirmed)return;await restoreBackupToSupabase(backup);const refreshed=await loadFromSupabase();const selected=applyUserPreferences(refreshed,session.user.id,pid);setDb(refreshed);setPid(selected);notify('Backup berhasil direstore ke Supabase')}catch(error){console.error('RESTORE ERROR:',error);notify(error instanceof Error ? error.message : 'Restore backup gagal')}};rd.readAsText(f);e.currentTarget.value=''}}/></div></>}{page==='Project Report'&&<><PageHead title="Project Report" action="Generate PDF" onAction={exportReport}/><div className="panel" ref={report}><h1>{p?.name}</h1><p>{p?.client}  |  {p?.number}</p><div className="kpis"><Kpi title="Total Persentase Rencana" value={formatPercent(planned)}/><Kpi title="Total Persentase Aktual" value={formatPercent(actual)}/><Kpi title="Selisih Aktual - Rencana" value={formatPercent(dev)}/></div><Chart data={sc} refEl={chart}/>{p&&<ApprovalSummary p={p}/>}</div></>}
-</main><footer>Changes are saved to Supabase</footer></div>{toast&&<div className="toast">{toast}</div>}{modal && <RowModal
+</main><footer aria-live="polite" data-save-state={saveStatus}>{saveStatus === 'saving' ? 'Menyimpan perubahan ke Supabase…' : saveStatus === 'error' ? 'Gagal menyimpan perubahan. Periksa koneksi dan coba lagi.' : `Tersinkron ke Supabase${lastSavedAt ? ` · terakhir disimpan ${lastSavedAt.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}` : ''}`}</footer></div>{toast&&<div className="toast">{toast}</div>}{modal && <RowModal
   row={modal}
   cols={cols}
   wbsRows={rows('wbs')}
@@ -1017,7 +1079,7 @@ function ProjectForm({p,change}:any){const keys=['name','number','client','locat
 function ApprovalForm({p,change}:any){const approval=p?.approval||{};const updateApproval=(key:string,value:string)=>change('approval',{...approval,[key]:value});const sections=[{title:'Approval 1',fields:[['firstCompany','Company'],['firstName','Name'],['firstPosition','Position'],['firstSignature','Signature']]},{title:'Approval 2',fields:[['secondCompany','Company'],['secondName','Name'],['secondPosition','Position'],['secondSignature','Signature']]}];return <div className="stack">{sections.map(section=><div className="panel" key={section.title}><h2>{section.title}</h2><div className="form-grid">{section.fields.map(([key,title])=><label key={key}>{title}<input value={approval[key]??''} onChange={e=>updateApproval(key,e.target.value)}/></label>)}</div></div>)}</div>}
 function BrandForm({p,change,notify}:any){const [logo,setLogo]=useState(p?.logo||'');useEffect(()=>setLogo(p?.logo||''),[p?.logo]);const saveBranding=()=>{change('logo',logo);notify('Company branding updated')};return <div className="panel"><h2>Company Branding</h2><div className="form-grid"><label>Logo URL<input value={logo} onChange={e=>setLogo(e.target.value)} placeholder="https://..."/></label></div>{logo&&<div style={{marginTop:20}}><p>Preview</p><img src={logo} alt="Company Logo" style={{maxWidth:240,maxHeight:120,objectFit:'contain'}}/></div>}<button type="button" className="primary" onClick={saveBranding} style={{marginTop:20}}>Save Branding</button></div>}
 function ApprovalSummary({p}:any){const approval=p?.approval||{};return <div className="panel" style={{marginTop:24}}><h2>Approval</h2><div className="kpis"><div><strong>{approval.firstCompany||'-'}</strong><div>{approval.firstName||'-'}</div><div>{approval.firstPosition||'-'}</div></div><div><strong>{approval.secondCompany||'-'}</strong><div>{approval.secondName||'-'}</div><div>{approval.secondPosition||'-'}</div></div></div></div>}
-function PageHead({title,subtitle,action,onAction}:any){return <div className="pagehead"><div><h1>{title}</h1>{subtitle&&<p>{subtitle}</p>}</div>{action&&(typeof action==='string'?<button className="primary" onClick={onAction}>{action}</button>:<div className="head-actions">{action}</div>)}</div>}function Kpi({title,value}:any){return <div className="panel kpi"><small>{title}</small><b>{value}</b></div>}function PanelTitle({title,action}:any){return <div className="panel-title"><h3>{title}</h3>{action}</div>}function Tag({v}:any){return <span className="tag">{v||'-'}</span>}function Chart({data,refEl,large}:any){return <div className={`chart ${large?'large':''}`} ref={refEl}>{data.length?<ResponsiveContainer width="100%" height="100%"><AreaChart data={data}><CartesianGrid strokeDasharray="3 4" vertical={false}/><XAxis dataKey="week" tickFormatter={x=>`W${x}`}/><YAxis tickFormatter={(x:any)=>formatPercent(x)} domain={[0,100]}/><Tooltip formatter={(x:any)=>formatPercent(x)}/><Legend/><Area type="monotone" name="Planned" dataKey="plannedCum" stroke="#5578db" fill="#5578db22"/><Area type="monotone" name="Actual" dataKey="actualCum" stroke="#12a889" fill="#12a88922"/></AreaChart></ResponsiveContainer>:<p className="empty">No progress data available.</p>}</div>}function SCurveBreakdownTable({data}:any){if(!data.length)return <section className="sc-breakdown"><h3>Rekap Progres per Minggu</h3><p>No progress data available.</p></section>;const metrics=[['RENCANA','plannedWeekly'],['KUMULATIF RENCANA','plannedCum'],['REALISASI','actualWeekly'],['KUMULATIF REALISASI','actualCum'],['DEVIASI','deviation']];return <section className="sc-breakdown"><h3>Rekap Progres per Minggu</h3><div className="table-scroll"><table><thead><tr><th>Uraian</th>{data.map((r:any,i:number)=><th key={r.id||i}>Minggu {r.week}<small>{r.date||''}</small></th>)}</tr></thead><tbody>{metrics.map(([title,key])=><tr key={key}><th>{title}</th>{data.map((r:any,i:number)=><td key={r.id||i}>{formatPercent(r[key])}</td>)}</tr>)}</tbody></table></div></section>}function RowModal({
+function PageHead({title,subtitle,action,onAction}:any){return <div className="pagehead"><div><h1>{title}</h1>{subtitle&&<p>{subtitle}</p>}</div>{action&&(typeof action==='string'?<button className="primary" onClick={onAction}>{action}</button>:<div className="head-actions">{action}</div>)}</div>}function Kpi({title,value}:any){return <div className="panel kpi"><small>{title}</small><b>{value}</b></div>}function PanelTitle({title,action}:any){return <div className="panel-title"><h3>{title}</h3>{action}</div>}function Tag({v}:any){return <span className="tag">{v||'-'}</span>}function Chart(props:any){return <React.Suspense fallback={<div className="chart"><p className="empty">Loading chart…</p></div>}><LazyProgressChart {...props}/></React.Suspense>}function SCurveBreakdownTable({data}:any){if(!data.length)return <section className="sc-breakdown"><h3>Rekap Progres per Minggu</h3><p>No progress data available.</p></section>;const metrics=[['RENCANA','plannedWeekly'],['KUMULATIF RENCANA','plannedCum'],['REALISASI','actualWeekly'],['KUMULATIF REALISASI','actualCum'],['DEVIASI','deviation']];return <section className="sc-breakdown"><h3>Rekap Progres per Minggu</h3><div className="table-scroll"><table><thead><tr><th>Uraian</th>{data.map((r:any,i:number)=><th key={r.id||i}>Minggu {r.week}<small>{r.date||''}</small></th>)}</tr></thead><tbody>{metrics.map(([title,key])=><tr key={key}><th>{title}</th>{data.map((r:any,i:number)=><td key={r.id||i}>{formatPercent(r[key])}</td>)}</tr>)}</tbody></table></div></section>}function RowModal({
   row,
   cols,
   wbsRows = [],

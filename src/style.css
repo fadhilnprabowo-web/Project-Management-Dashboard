@@ -312,3 +312,4 @@
 .wbs-empty { display: block; padding: 8px; }
 .activity-autofill { min-height: 40px; max-height: 140px; overflow: auto; padding: 9px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--shade); color: var(--text); font-size: 12px; line-height: 1.5; }
 .activity-autofill > div + div { margin-top: 5px; padding-top: 5px; border-top: 1px solid var(--line); }
+footer[data-save-state="saving"]{color:#9a6500}footer[data-save-state="error"]{color:#b42318;font-weight:600}footer[data-save-state="saved"]{color:#27835e}
