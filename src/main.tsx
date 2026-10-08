@@ -1020,6 +1020,7 @@ return <div className={`app ${sidebarOpen ? 'sidebar-is-open' : 'sidebar-is-clos
       <Kpi title="Planned" value={formatPercent(planned)} />
       <Kpi title="Actual" value={formatPercent(actual)} />
       <Kpi title="Deviation" value={formatPercent(dev)} />
+      <Kpi title="Open Issues" value={String(openIssues)} />
     </div>
 
     <div className="panel dashboard-chart">
