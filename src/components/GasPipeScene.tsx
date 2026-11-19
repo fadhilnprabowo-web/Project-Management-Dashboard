@@ -7,6 +7,7 @@ export type GasRoute = {
   id: string
   label: string
   layer?: string
+  sourceColor?: string
   gas: GasType | ''
   points: Point2[]
   verified: boolean
@@ -37,6 +38,7 @@ export default function GasPipeScene({
   const hostRef = useRef<HTMLDivElement>(null)
   const apiRef = useRef<SceneApi | null>(null)
   const geometryRef = useRef<any>(null)
+  const fitRef = useRef({ center: { x: 0, y: 0, z: 0 }, size: { x: 10, y: 1, z: 10 } })
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading')
   const [message, setMessage] = useState('Memuat engine 3D…')
 
@@ -126,11 +128,13 @@ export default function GasPipeScene({
     const api = apiRef.current
     if (!api || state !== 'ready') return
     const { scene, camera, controls } = api
-    const center = controls.target
-    if (view === 'top') camera.position.set(center.x, center.y + 16, center.z + 0.001)
-    else if (view === 'front') camera.position.set(center.x, center.y + 0.01, center.z + 18)
-    else if (view === 'side') camera.position.set(center.x + 18, center.y + 0.01, center.z)
-    else camera.position.set(center.x + 14, center.y + 12, center.z + 14)
+    const { center, size } = fitRef.current
+    const distance = Math.max(size.x, size.y, size.z, 2) * 1.65
+    controls.target.set(center.x, center.y, center.z)
+    if (view === 'top') camera.position.set(center.x, center.y + distance, center.z + 0.001)
+    else if (view === 'front') camera.position.set(center.x, center.y + 0.01, center.z + distance)
+    else if (view === 'side') camera.position.set(center.x + distance, center.y + 0.01, center.z)
+    else camera.position.set(center.x + distance * 0.72, center.y + distance * 0.62, center.z + distance * 0.72)
     if (view === 'top') camera.up.set(0, 0, -1)
     else camera.up.set(0, 1, 0)
     camera.lookAt(center)
@@ -158,7 +162,7 @@ export default function GasPipeScene({
       const extent = 10
       for (const route of candidateRoutes) {
         const isVerified = Boolean(route.gas && route.verified)
-        const config = route.gas ? settings[route.gas] : { color: '#a7b0bc', diameter: 0.12, elevation: 0.5 }
+        const config = route.gas ? settings[route.gas] : { color: '#b87333', diameter: 0.12, elevation: 0.5 }
         const radius = Math.max(0.025, Number(config.diameter) / 2)
         const y = Number(config.elevation)
         const material = new Three.MeshStandardMaterial({
@@ -209,6 +213,22 @@ export default function GasPipeScene({
       }
       geometryRef.current = group
       scene.add(group)
+      const bounds = new Three.Box3().setFromObject(group)
+      if (!bounds.isEmpty()) {
+        const center = bounds.getCenter(new Three.Vector3())
+        const size = bounds.getSize(new Three.Vector3())
+        fitRef.current = { center: { x: center.x, y: center.y, z: center.z }, size: { x: size.x, y: size.y, z: size.z } }
+        const distance = Math.max(size.x, size.y, size.z, 2) * 1.65
+        api.controls.target.copy(center)
+        if (view === 'top') api.camera.position.set(center.x, center.y + distance, center.z + 0.001)
+        else if (view === 'front') api.camera.position.set(center.x, center.y + 0.01, center.z + distance)
+        else if (view === 'side') api.camera.position.set(center.x + distance, center.y + 0.01, center.z)
+        else api.camera.position.set(center.x + distance * 0.72, center.y + distance * 0.62, center.z + distance * 0.72)
+        if (view === 'top') api.camera.up.set(0, 0, -1)
+        else api.camera.up.set(0, 1, 0)
+        api.camera.lookAt(center)
+        api.controls.update()
+      }
       api.renderer.render(scene, api.camera)
     })
     return () => { active = false }

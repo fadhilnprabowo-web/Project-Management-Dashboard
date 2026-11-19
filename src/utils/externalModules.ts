@@ -1,13 +1,13 @@
-const loadModule = (url: string) => import(/* @vite-ignore */ url) as Promise<any>
+type ThreeTools = { THREE: any; OrbitControls: any; GLTFExporter: any; OBJExporter: any }
 
-let threePromise: Promise<{ THREE: any; OrbitControls: any; GLTFExporter: any; OBJExporter: any }> | null = null
+let threePromise: Promise<ThreeTools> | null = null
 export function loadThreeTools() {
   if (!threePromise) {
     threePromise = Promise.all([
-      loadModule('https://cdn.jsdelivr.net/npm/three@0.187.0/build/three.module.js'),
-      loadModule('https://cdn.jsdelivr.net/npm/three@0.187.0/examples/jsm/controls/OrbitControls.js'),
-      loadModule('https://cdn.jsdelivr.net/npm/three@0.187.0/examples/jsm/exporters/GLTFExporter.js'),
-      loadModule('https://cdn.jsdelivr.net/npm/three@0.187.0/examples/jsm/exporters/OBJExporter.js'),
+      import('three'),
+      import('three/addons/controls/OrbitControls.js'),
+      import('three/addons/exporters/GLTFExporter.js'),
+      import('three/addons/exporters/OBJExporter.js'),
     ]).then(([THREE, controls, gltf, obj]) => ({
       THREE,
       OrbitControls: controls.OrbitControls,
@@ -24,7 +24,13 @@ export function loadThreeTools() {
 let pdfPromise: Promise<any> | null = null
 export function loadPdfJs() {
   if (!pdfPromise) {
-    pdfPromise = loadModule('https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.mjs').catch(error => {
+    pdfPromise = Promise.all([
+      import('pdfjs-dist'),
+      import('pdfjs-dist/build/pdf.worker.min.mjs?url'),
+    ]).then(([pdfjs, worker]) => {
+      pdfjs.GlobalWorkerOptions.workerSrc = worker.default
+      return pdfjs
+    }).catch(error => {
       pdfPromise = null
       throw error
     })
@@ -35,7 +41,8 @@ export function loadPdfJs() {
 let modelViewerPromise: Promise<void> | null = null
 export function loadModelViewer() {
   if (!modelViewerPromise) {
-    modelViewerPromise = loadModule('https://cdn.jsdelivr.net/npm/@google/model-viewer@4.4.0/dist/model-viewer.min.js').then(() => undefined).catch(error => {
+    const url = 'https://cdn.jsdelivr.net/npm/@google/model-viewer@4.4.0/dist/model-viewer.min.js'
+    modelViewerPromise = import(/* @vite-ignore */ url).then(() => undefined).catch(error => {
       modelViewerPromise = null
       throw error
     })

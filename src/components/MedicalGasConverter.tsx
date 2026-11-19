@@ -3,6 +3,7 @@ import { AlertTriangle, Camera, Check, Eye, EyeOff, FileUp, Maximize2, Minus, Mo
 import type { Project, Row } from '../types'
 import GasPipeScene, { GasRoute, GasSettings, GasType, Point2, SceneApi } from './GasPipeScene'
 import { loadPdfJs, loadThreeTools } from '../utils/externalModules'
+import { extractPdfVectorRoutes } from '../utils/pdfVectorRoutes'
 import { formatPercent } from '../utils/format'
 
 const GAS_TYPES: GasType[] = ['Oxygen', 'Nitrous Oxide', 'Medical Air', 'Medical Vacuum']
@@ -21,7 +22,7 @@ const INITIAL_SETTINGS: GasSettings = {
 const INITIAL_SIZE = { width: 1200, height: 800 }
 
 type PlanSize = { width: number; height: number }
-type DxfLine = { points: Point2[]; layer: string }
+type DxfLine = { points: Point2[]; layer: string; color?: string }
 
 function downloadBlob(blob: Blob, fileName: string) {
   const url = URL.createObjectURL(blob)
@@ -170,8 +171,8 @@ function PlanCanvas({
       ctx.setLineDash([])
       points.forEach(point => { ctx.beginPath(); ctx.arc(point.x * size.width, point.y * size.height, 4, 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill() })
     }
-    dxfBackground.forEach(line => paint(line.points, '#8a939f66', true, 2))
-    routes.forEach(route => paint(route.points, route.gas ? settings[route.gas].color : '#e0932c', !route.verified, 4))
+    dxfBackground.forEach(line => paint(line.points, line.color || '#8a939f66', true, 2))
+    routes.forEach(route => paint(route.points, route.gas ? settings[route.gas].color : route.sourceColor || '#e0932c', !route.verified, 4))
     paint(draft, '#00a9b5', false, 3)
   }
   useEffect(() => { draw() }, [size.width, size.height, routes, draft, settings, dxfBackground])
@@ -269,10 +270,27 @@ export default function MedicalGasConverter({
       canvas.height = Math.ceil(viewport.height)
       await page.render({ canvasContext: canvas.getContext('2d'), canvas, viewport }).promise
       const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob(value => value ? resolve(value) : reject(new Error('PDF tidak dapat dirender.')), 'image/png'))
-      setPlanImage(blob, `${planName.replace(/\.pdf$/i, '')} · halaman ${pageNumber}`, viewport.width / viewport.height)
+      const operatorList = await page.getOperatorList()
+      const pdfjs = await loadPdfJs()
+      const baseViewport = page.getViewport({ scale: 1 })
+      const detected = extractPdfVectorRoutes(pdfjs, operatorList, baseViewport.width, baseViewport.height)
+      setPlanImage(blob, `${planName.replace(/ · halaman \d+$/i, '').replace(/\.pdf$/i, '')} · halaman ${pageNumber}`, viewport.width / viewport.height)
+      const pdfRoutes: GasRoute[] = detected.routes.map((route, index) => ({
+        id: crypto.randomUUID(),
+        label: `PDF ${route.color === '#ff0000' ? 'merah' : 'hijau'} · ${index + 1}`,
+        layer: 'Kandidat vektor PDF',
+        sourceColor: route.color,
+        gas: '',
+        points: route.points,
+        verified: false,
+      }))
+      setRoutes(pdfRoutes)
       setPdfDoc(doc)
       setPdfPages(doc.numPages)
       setPdfPage(pageNumber)
+      setNotice(pdfRoutes.length
+        ? `${pdfRoutes.length} jalur vektor terdeteksi otomatis dari halaman ${pageNumber} (${detected.redCount} merah, ${detected.greenCount} hijau). Pilih jenis gas dari legend lalu verifikasi; PDF ini tidak memiliki legend warna yang terbaca.`
+        : 'Halaman PDF terbuka, tetapi tidak ditemukan garis vektor merah/hijau yang cocok. Raster/scanned PDF atau warna lain perlu proses deteksi khusus.')
     } catch (reason) {
       setError(`Halaman PDF gagal dirender: ${reason instanceof Error ? reason.message : String(reason)}`)
     }
@@ -293,7 +311,6 @@ export default function MedicalGasConverter({
         setPlanName(file.name)
         setNotice('Membuka halaman pertama PDF…')
         const pdfjs = await loadPdfJs()
-        pdfjs.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs'
         const documentTask = pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) })
         const doc = await documentTask.promise
         setNotice('')
@@ -375,7 +392,7 @@ export default function MedicalGasConverter({
       new GLTFExporter().parse(sceneApi.scene, (result: ArrayBuffer | object) => {
         const blob = new Blob([result as BlobPart], { type: 'model/gltf-binary' })
         downloadBlob(blob, `${project.name.replace(/[^a-z0-9_-]+/gi, '_')}_medical_gas_3d.glb`)
-      }, (reason: Error) => setError(`Export GLB gagal: ${reason.message}`), { binary: true, onlyVisible: true })
+      }, (reason: ErrorEvent) => setError(`Export GLB gagal: ${reason.message}`), { binary: true, onlyVisible: true })
     } catch (reason) { setError(`Export GLB gagal: ${reason instanceof Error ? reason.message : String(reason)}`) }
   }
 
@@ -385,7 +402,7 @@ export default function MedicalGasConverter({
       <label className="primary medical-plan-upload"><FileUp size={15}/> Unggah denah<input type="file" accept=".pdf,.png,.jpg,.jpeg,.dxf,application/pdf,image/png,image/jpeg" onChange={event => { void handleFile(event.currentTarget.files?.[0]); event.currentTarget.value = '' }}/></label>
     </div>
 
-    <div className="medical-converter-guidance"><AlertTriangle size={16}/><span>Hanya jalur yang diklasifikasikan dan diverifikasi yang akan menjadi pipa 3D. Warna, diameter, skala, dan elevasi mengikuti input/legend; nilai visual yang belum dipastikan tidak dinyatakan sebagai kondisi aktual.</span></div>
+    <div className="medical-converter-guidance"><AlertTriangle size={16}/><span>PDF vektor dapat dipindai otomatis menjadi kandidat jalur 3D. Konfirmasi jenis gas dan verifikasi posisi sebelum ekspor; warna, diameter, skala, dan elevasi tidak diasumsikan sebagai data aktual.</span></div>
     {error && <div className="medical-converter-alert error" role="alert"><AlertTriangle size={15}/><span>{error}</span><button onClick={() => setError('')} aria-label="Tutup">×</button></div>}
     {notice && <div className="medical-converter-alert info" role="status"><Check size={15}/><span>{notice}</span><button onClick={() => setNotice('')} aria-label="Tutup">×</button></div>}
 
@@ -399,7 +416,7 @@ export default function MedicalGasConverter({
         </div></div>
         <div className="medical-trace-toolbar">
           <label>Jenis gas untuk trace<select value={gasForTrace} onChange={event => setGasForTrace(event.target.value as GasType | '')}><option value="">Pilih dari legend…</option>{GAS_TYPES.map(gas => <option key={gas} value={gas}>{GAS_LABELS[gas]}</option>)}</select></label>
-          <small>DXF: garis impor masih kandidat. Raster/PDF: trace titik jalur sendiri. Semua jalur memerlukan verifikasi.</small>
+          <small>PDF vektor dan DXF dipindai otomatis; PNG/JPG atau PDF raster masih memerlukan trace manual. Semua kandidat perlu verifikasi.</small>
         </div>
         {notice.includes('Membuka halaman') ? <div className="medical-plan-loading">{notice}</div> : <PlanCanvas size={size} imageUrl={imageUrl} dxfBackground={dxfBackground} routes={routes} draft={draft} settings={settings} drawing={drawing} onPoint={addDraftPoint} onFinish={finishRoute}/>}
         <div className="medical-plan-footer"><span>Posisi jalur ditransformasikan proporsional dari denah; tidak mengklaim dimensi aktual.</span></div>
@@ -422,8 +439,8 @@ export default function MedicalGasConverter({
     <div className="medical-converter-columns lower">
       <section className="panel medical-route-panel">
         <div className="medical-panel-head"><div><h2>Jalur teridentifikasi</h2><p>{verifiedRoutes} diverifikasi · {routes.length - verifiedRoutes} perlu tinjauan</p></div><span className="medical-route-count">{routes.length}</span></div>
-        {!routes.length ? <div className="medical-routes-empty">Belum ada kandidat jalur. Trace gambar atau impor entitas LINE/LWPOLYLINE dari DXF.</div> : <div className="medical-route-list">{routes.map(route => <div key={route.id} className={`medical-route-row ${selectedRouteId === route.id ? 'active' : ''}`} onClick={() => setSelectedRouteId(route.id)}>
-          <span className="route-line-swatch" style={{ backgroundColor: route.gas ? settings[route.gas].color : '#e0932c' }}/><span className="route-route-name"><strong>{route.label}</strong><small>{route.layer || 'Trace manual'} · {route.points.length} titik</small></span>
+        {!routes.length ? <div className="medical-routes-empty">Belum ada kandidat jalur. Unggah PDF vektor/DXF untuk deteksi otomatis, atau trace PNG/JPG/PDF raster.</div> : <div className="medical-route-list">{routes.map(route => <div key={route.id} className={`medical-route-row ${selectedRouteId === route.id ? 'active' : ''}`} onClick={() => setSelectedRouteId(route.id)}>
+          <span className="route-line-swatch" style={{ backgroundColor: route.gas ? settings[route.gas].color : route.sourceColor || '#e0932c' }}/><span className="route-route-name"><strong>{route.label}</strong><small>{route.layer || 'Trace manual'} · {route.points.length} titik</small></span>
           <select aria-label={`Jenis gas ${route.label}`} value={route.gas} onClick={event => event.stopPropagation()} onChange={event => updateRoute(route.id, { gas: event.target.value as GasType | '' })}><option value="">Pilih gas…</option>{GAS_TYPES.map(gas => <option value={gas} key={gas}>{GAS_LABELS[gas]}</option>)}</select>
           <label className="route-verified" onClick={event => event.stopPropagation()} title="Verifikasi posisi dan jenis dari gambar"><input type="checkbox" checked={route.verified} disabled={!route.gas} onChange={event => updateRoute(route.id, { verified: event.target.checked })}/><span>{route.verified ? 'Terverifikasi' : 'Perlu cek'}</span></label>
           <button className="icon" onClick={event => { event.stopPropagation(); setRoutes(current => current.filter(item => item.id !== route.id)); if (selectedRouteId === route.id) setSelectedRouteId('') }} aria-label="Hapus kandidat jalur"><Trash2 size={14}/></button>
@@ -442,6 +459,6 @@ export default function MedicalGasConverter({
       </section>
     </div>
 
-    <div className="medical-converter-footer"><strong>{verifiedRoutes} jalur siap diekspor</strong><span>{assignedRoutes} dari {routes.length} jalur sudah diberi jenis gas. Jalur yang belum terverifikasi dikecualikan dari 3D dan export.</span></div>
+    <div className="medical-converter-footer"><strong>{verifiedRoutes} jalur siap diekspor</strong><span>{assignedRoutes} dari {routes.length} jalur sudah diberi jenis gas. Kandidat tanpa verifikasi tetap tampak redup di preview, tetapi tidak disertakan pada export.</span></div>
   </div>
 }
