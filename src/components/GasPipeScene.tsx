@@ -60,7 +60,9 @@ export default function GasPipeScene({
       renderer.toneMapping = THREE.ACESFilmicToneMapping
       renderer.toneMappingExposure = 1.15
       renderer.domElement.className = 'gas-three-canvas'
-      hostRef.current.replaceChildren(renderer.domElement)
+      // Keep React-owned loading/error/help overlays in the stage. Replacing
+      // children here removed those nodes and made the viewer appear blank.
+      hostRef.current.appendChild(renderer.domElement)
       scene.add(new THREE.HemisphereLight(0xe7eef8, 0x263241, 2.0))
       const keyLight = new THREE.DirectionalLight(0xffffff, 3.2)
       keyLight.position.set(7, 12, 8)
@@ -152,11 +154,11 @@ export default function GasPipeScene({
         })
       }
       const group = new Three.Group()
-      const visibleRoutes = routes.filter(route => route.gas && route.verified && settings[route.gas].visible && route.points.length >= 2)
+      const candidateRoutes = routes.filter(route => route.points.length >= 2 && (!route.gas || settings[route.gas].visible))
       const extent = 10
-      for (const route of visibleRoutes) {
-        const gas = route.gas as GasType
-        const config = settings[gas]
+      for (const route of candidateRoutes) {
+        const isVerified = Boolean(route.gas && route.verified)
+        const config = route.gas ? settings[route.gas] : { color: '#a7b0bc', diameter: 0.12, elevation: 0.5 }
         const radius = Math.max(0.025, Number(config.diameter) / 2)
         const y = Number(config.elevation)
         const material = new Three.MeshStandardMaterial({
@@ -164,6 +166,9 @@ export default function GasPipeScene({
           metalness: 0.78,
           roughness: 0.28,
           envMapIntensity: 1.05,
+          transparent: !isVerified,
+          opacity: isVerified ? 1 : 0.42,
+          depthWrite: isVerified,
         })
         const points = route.points.map(point => new Three.Vector3((point.x - 0.5) * extent, y, (point.y - 0.5) * extent / Math.max(0.2, planAspect)))
         for (let index = 0; index < points.length - 1; index++) {
@@ -193,10 +198,14 @@ export default function GasPipeScene({
           group.add(endpoint)
         }
       }
-      if (!visibleRoutes.length) {
-        setMessage('Belum ada jalur yang sudah diverifikasi dan diberi jenis gas. Jalur yang belum pasti tidak dibuat menjadi pipa 3D.')
+      const verifiedCount = candidateRoutes.filter(route => route.gas && route.verified).length
+      if (!candidateRoutes.length) {
+        setMessage('Belum ada jalur untuk divisualisasikan. Unggah denah, lalu trace jalur atau impor garis DXF.')
+      } else if (!verifiedCount) {
+        setMessage(`Pratinjau kandidat · ${candidateRoutes.length} jalur masih perlu jenis gas/verifikasi. Preview redup ini tidak ikut ekspor.`)
       } else {
-        setMessage('')
+        const pendingCount = candidateRoutes.length - verifiedCount
+        setMessage(pendingCount ? `${verifiedCount} jalur terverifikasi · ${pendingCount} kandidat masih redup dan tidak ikut ekspor.` : '')
       }
       geometryRef.current = group
       scene.add(group)
