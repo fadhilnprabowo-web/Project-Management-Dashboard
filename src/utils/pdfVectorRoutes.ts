@@ -1,5 +1,33 @@
 export type PdfRoutePoint = { x: number; y: number }
-export type PdfVectorRoute = { points: PdfRoutePoint[]; color: string }
+export type PdfVectorRoute = { points: PdfRoutePoint[]; color: string; gas: 'Oxygen' | 'Nitrous Oxide' | 'Medical Air' | 'Medical Vacuum' | '' }
+
+export function gasFromPlanColor(color: string): PdfVectorRoute['gas'] {
+  const hex = color.replace('#', '')
+  if (!/^[0-9a-f]{6}$/i.test(hex)) return ''
+  const r = parseInt(hex.slice(0, 2), 16)
+  const g = parseInt(hex.slice(2, 4), 16)
+  const b = parseInt(hex.slice(4, 6), 16)
+  if (g >= 120 && g > r * 1.45 && g > b * 1.25) return 'Oxygen'
+  if (b >= 120 && b > r * 1.45 && b > g * 1.15) return 'Nitrous Oxide'
+  if (r >= 160 && g >= 160 && b < 120) return 'Medical Air'
+  if (Math.max(r, g, b) <= 55) return 'Medical Vacuum'
+  return ''
+}
+
+function isReviewColor(color: string) {
+  const hex = color.replace('#', '')
+  if (!/^[0-9a-f]{6}$/i.test(hex)) return false
+  const channels = [0, 2, 4].map(offset => parseInt(hex.slice(offset, offset + 2), 16))
+  return Math.max(...channels) >= 140 && Math.max(...channels) - Math.min(...channels) >= 90
+}
+
+function floorFromPageText(text: string, pageNumber: number) {
+  const match = text.match(/\b(?:lantai|floor|level|lt\.?)[\s:_-]*(\d+|ground|dasar|basement|semi\s*basement)\b/i)
+  if (!match) return { floorIndex: pageNumber - 1, floorLabel: `Lantai ${pageNumber}` }
+  const raw = match[1].toLowerCase().replace(/\s+/g, ' ')
+  const floorIndex = /^\d+$/.test(raw) ? Math.max(0, Number(raw) - 1) : raw === 'ground' || raw === 'dasar' ? 0 : -1
+  return { floorIndex, floorLabel: raw === 'ground' || raw === 'dasar' ? 'Lantai Dasar' : raw === 'basement' ? 'Basement' : raw === 'semi basement' ? 'Semi-basement' : `Lantai ${raw}` }
+}
 
 type Matrix = [number, number, number, number, number, number]
 
@@ -17,10 +45,10 @@ const multiplyMatrix = (left: Matrix, right: Matrix): Matrix => [
   left[1] * right[4] + left[3] * right[5] + left[5],
 ]
 
-/** Extract long, predominantly orthogonal red/green vector strokes from a PDF page.
- * This creates reviewable route candidates; it never assigns a gas type from color.
+/** Extract long, predominantly orthogonal colored vector strokes from a PDF page.
+ * Gas classification follows the project mapping supplied by the user.
  */
-export function extractPdfVectorRoutes(pdfjs: any, operatorList: any, pageWidth: number, pageHeight: number) {
+export function extractPdfVectorRoutes(pdfjs: any, operatorList: any, pageWidth: number, pageHeight: number, floorIndex = 0, floorLabel = 'Lantai 1', pageNumber = 1) {
   const { OPS } = pdfjs
   let matrix: Matrix = [1, 0, 0, 1, 0, 0]
   let strokeColor = ''
@@ -48,7 +76,7 @@ export function extractPdfVectorRoutes(pdfjs: any, operatorList: any, pageWidth:
       strokeColor = `#${[args[0], args[1], args[2]].map((value: number) => Math.round(value).toString(16).padStart(2, '0')).join('')}`.toLowerCase()
       continue
     }
-    if (op !== OPS.constructPath || (strokeColor !== '#ff0000' && strokeColor !== '#00ff00')) continue
+    if (op !== OPS.constructPath || (!gasFromPlanColor(strokeColor) && !isReviewColor(strokeColor))) continue
 
     const [commands, coordinates] = args as [number[], number[]]
     let offset = 0
@@ -102,6 +130,10 @@ export function extractPdfVectorRoutes(pdfjs: any, operatorList: any, pageWidth:
 
   const routes = paths.map(path => ({
     color: path.color,
+    gas: gasFromPlanColor(path.color),
+    floorIndex,
+    floorLabel,
+    pageNumber,
     points: path.points.map(point => ({
       x: Math.max(0, Math.min(1, point.x / pageWidth)),
       y: Math.max(0, Math.min(1, 1 - point.y / pageHeight)),
@@ -109,8 +141,26 @@ export function extractPdfVectorRoutes(pdfjs: any, operatorList: any, pageWidth:
   }))
   return {
     routes,
-    redCount: routes.filter(route => route.color === '#ff0000').length,
-    greenCount: routes.filter(route => route.color === '#00ff00').length,
+    colorCounts: routes.reduce<Record<string, number>>((counts, route) => {
+      counts[route.color] = (counts[route.color] || 0) + 1
+      return counts
+    }, {}),
     unsupportedCurveCount,
   }
+}
+
+export async function extractPdfDocumentRoutes(pdfjs: any, document: any, onPage?: (pageNumber: number, totalPages: number) => void) {
+  const routes: ReturnType<typeof extractPdfVectorRoutes>['routes'] = []
+  const pages: Array<{ pageNumber: number; floorLabel: string; floorIndex: number; routeCount: number }> = []
+  for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber++) {
+    onPage?.(pageNumber, document.numPages)
+    const page = await document.getPage(pageNumber)
+    const [operatorList, textContent] = await Promise.all([page.getOperatorList(), page.getTextContent()])
+    const floor = floorFromPageText(textContent.items.map((item: any) => item.str || '').join(' '), pageNumber)
+    const viewport = page.getViewport({ scale: 1 })
+    const pageResult = extractPdfVectorRoutes(pdfjs, operatorList, viewport.width, viewport.height, floor.floorIndex, floor.floorLabel, pageNumber)
+    routes.push(...pageResult.routes)
+    pages.push({ pageNumber, ...floor, routeCount: pageResult.routes.length })
+  }
+  return { routes, pages }
 }

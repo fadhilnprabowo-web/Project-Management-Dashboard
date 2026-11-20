@@ -394,3 +394,5 @@ footer[data-save-state="saving"]{color:#9a6500}footer[data-save-state="error"]{c
   .dashboard-chart .dashboard-section-head { align-items: flex-start; }
   .dashboard-grid > .panel { padding: 16px; }
 }
+/* Editable visual gap between PDF floor levels in the medical-gas model. */
+.floor-step-control{display:flex;align-items:center;gap:5px;color:var(--muted);font-size:9px}.floor-step-control input{width:58px;padding:5px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--text);font:inherit}

@@ -12,6 +12,9 @@ export type GasRoute = {
   points: Point2[]
   verified: boolean
   wbsId?: string
+  floorIndex?: number
+  floorLabel?: string
+  sourcePage?: number
 }
 export type GasSettings = Record<GasType, { color: string; diameter: number; elevation: number; visible: boolean }>
 
@@ -27,12 +30,14 @@ export default function GasPipeScene({
   settings,
   view,
   planAspect,
+  floorStep,
   onApi,
 }: {
   routes: GasRoute[]
   settings: GasSettings
   view: 'isometric' | 'top' | 'front' | 'side'
   planAspect: number
+  floorStep: number
   onApi: (api: SceneApi | null) => void
 }) {
   const hostRef = useRef<HTMLDivElement>(null)
@@ -161,18 +166,18 @@ export default function GasPipeScene({
       const candidateRoutes = routes.filter(route => route.points.length >= 2 && (!route.gas || settings[route.gas].visible))
       const extent = 10
       for (const route of candidateRoutes) {
-        const isVerified = Boolean(route.gas && route.verified)
+        const isClassified = Boolean(route.gas)
         const config = route.gas ? settings[route.gas] : { color: '#b87333', diameter: 0.12, elevation: 0.5 }
         const radius = Math.max(0.025, Number(config.diameter) / 2)
-        const y = Number(config.elevation)
+        const y = Number(config.elevation) + (route.floorIndex || 0) * floorStep
         const material = new Three.MeshStandardMaterial({
           color: config.color,
           metalness: 0.78,
           roughness: 0.28,
           envMapIntensity: 1.05,
-          transparent: !isVerified,
-          opacity: isVerified ? 1 : 0.42,
-          depthWrite: isVerified,
+          transparent: !isClassified,
+          opacity: isClassified ? 1 : 0.42,
+          depthWrite: isClassified,
         })
         const points = route.points.map(point => new Three.Vector3((point.x - 0.5) * extent, y, (point.y - 0.5) * extent / Math.max(0.2, planAspect)))
         for (let index = 0; index < points.length - 1; index++) {
@@ -232,7 +237,7 @@ export default function GasPipeScene({
       api.renderer.render(scene, api.camera)
     })
     return () => { active = false }
-  }, [routes, settings, planAspect, state])
+  }, [routes, settings, planAspect, floorStep, state])
 
   return <div className="gas-three-stage" ref={hostRef}>
     {state === 'loading' && <div className="gas-three-message">{message}</div>}

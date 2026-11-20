@@ -3,7 +3,7 @@ import { AlertTriangle, Camera, Check, Eye, EyeOff, FileUp, Maximize2, Minus, Mo
 import type { Project, Row } from '../types'
 import GasPipeScene, { GasRoute, GasSettings, GasType, Point2, SceneApi } from './GasPipeScene'
 import { loadPdfJs, loadThreeTools } from '../utils/externalModules'
-import { extractPdfVectorRoutes } from '../utils/pdfVectorRoutes'
+import { extractPdfDocumentRoutes } from '../utils/pdfVectorRoutes'
 import { formatPercent } from '../utils/format'
 
 const GAS_TYPES: GasType[] = ['Oxygen', 'Nitrous Oxide', 'Medical Air', 'Medical Vacuum']
@@ -14,10 +14,10 @@ const GAS_LABELS: Record<GasType, string> = {
   'Medical Vacuum': 'Medical Vacuum (VAC)',
 }
 const INITIAL_SETTINGS: GasSettings = {
-  Oxygen: { color: '#b87333', diameter: 0.12, elevation: 0.5, visible: true },
-  'Nitrous Oxide': { color: '#b87333', diameter: 0.12, elevation: 0.5, visible: true },
-  'Medical Air': { color: '#b87333', diameter: 0.12, elevation: 0.5, visible: true },
-  'Medical Vacuum': { color: '#b87333', diameter: 0.12, elevation: 0.5, visible: true },
+  Oxygen: { color: '#16a34a', diameter: 0.12, elevation: 0.5, visible: true },
+  'Nitrous Oxide': { color: '#2563eb', diameter: 0.12, elevation: 0.5, visible: true },
+  'Medical Air': { color: '#eab308', diameter: 0.12, elevation: 0.5, visible: true },
+  'Medical Vacuum': { color: '#202020', diameter: 0.12, elevation: 0.5, visible: true },
 }
 const INITIAL_SIZE = { width: 1200, height: 800 }
 
@@ -209,6 +209,7 @@ export default function MedicalGasConverter({
   const [imageUrl, setImageUrl] = useState('')
   const [size, setSize] = useState<PlanSize>(INITIAL_SIZE)
   const [planAspect, setPlanAspect] = useState(1.5)
+  const [floorStep, setFloorStep] = useState(3.5)
   const [dxfBackground, setDxfBackground] = useState<DxfLine[]>([])
   const [routes, setRoutes] = useState<GasRoute[]>([])
   const [draft, setDraft] = useState<Point2[]>([])
@@ -223,6 +224,7 @@ export default function MedicalGasConverter({
   const [pdfDoc, setPdfDoc] = useState<any>(null)
   const [pdfPage, setPdfPage] = useState(1)
   const [pdfPages, setPdfPages] = useState(0)
+  const pdfRoutesRef = useRef<GasRoute[]>([])
   const fileUrlRef = useRef('')
   const selectedRoute = routes.find(route => route.id === selectedRouteId) ?? null
   const exportableRoutes = routes.filter(route => route.verified && route.gas && route.points.length >= 2)
@@ -239,7 +241,7 @@ export default function MedicalGasConverter({
     if (fileUrlRef.current) URL.revokeObjectURL(fileUrlRef.current)
   }, [])
 
-  const setPlanImage = (blob: Blob, name: string, aspect?: number) => {
+  const setPlanImage = (blob: Blob, name: string, aspect?: number, preserveRoutes = false) => {
     if (fileUrlRef.current) URL.revokeObjectURL(fileUrlRef.current)
     const url = URL.createObjectURL(blob)
     fileUrlRef.current = url
@@ -257,7 +259,7 @@ export default function MedicalGasConverter({
     setPdfDoc(null)
     setPdfPages(0)
     setError('')
-    setRoutes([])
+    if (!preserveRoutes) setRoutes([])
     setDraft([])
   }
 
@@ -270,27 +272,15 @@ export default function MedicalGasConverter({
       canvas.height = Math.ceil(viewport.height)
       await page.render({ canvasContext: canvas.getContext('2d'), canvas, viewport }).promise
       const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob(value => value ? resolve(value) : reject(new Error('PDF tidak dapat dirender.')), 'image/png'))
-      const operatorList = await page.getOperatorList()
-      const pdfjs = await loadPdfJs()
-      const baseViewport = page.getViewport({ scale: 1 })
-      const detected = extractPdfVectorRoutes(pdfjs, operatorList, baseViewport.width, baseViewport.height)
-      setPlanImage(blob, `${planName.replace(/ · halaman \d+$/i, '').replace(/\.pdf$/i, '')} · halaman ${pageNumber}`, viewport.width / viewport.height)
-      const pdfRoutes: GasRoute[] = detected.routes.map((route, index) => ({
-        id: crypto.randomUUID(),
-        label: `PDF ${route.color === '#ff0000' ? 'merah' : 'hijau'} · ${index + 1}`,
-        layer: 'Kandidat vektor PDF',
-        sourceColor: route.color,
-        gas: '',
-        points: route.points,
-        verified: false,
-      }))
-      setRoutes(pdfRoutes)
+      setPlanImage(blob, `${planName.replace(/ · halaman \d+$/i, '').replace(/\.pdf$/i, '')} · halaman ${pageNumber}`, viewport.width / viewport.height, true)
+      setRoutes(pdfRoutesRef.current)
       setPdfDoc(doc)
       setPdfPages(doc.numPages)
       setPdfPage(pageNumber)
-      setNotice(pdfRoutes.length
-        ? `${pdfRoutes.length} jalur vektor terdeteksi otomatis dari halaman ${pageNumber} (${detected.redCount} merah, ${detected.greenCount} hijau). Pilih jenis gas dari legend lalu verifikasi; PDF ini tidak memiliki legend warna yang terbaca.`
-        : 'Halaman PDF terbuka, tetapi tidak ditemukan garis vektor merah/hijau yang cocok. Raster/scanned PDF atau warna lain perlu proses deteksi khusus.')
+      const pageRouteCount = pdfRoutesRef.current.filter(route => route.sourcePage === pageNumber).length
+      setNotice(pdfRoutesRef.current.length
+        ? `${pdfRoutesRef.current.length} jalur dikenali otomatis dari ${doc.numPages} halaman. Denah halaman ${pageNumber} · ${pageRouteCount} kandidat; jalur lintas lantai sudah digabung pada preview 3D.`
+        : 'Halaman PDF terbuka, tetapi tidak ditemukan jalur vektor berwarna yang dikenali. PDF hasil scan/raster belum dapat dideteksi otomatis.')
     } catch (reason) {
       setError(`Halaman PDF gagal dirender: ${reason instanceof Error ? reason.message : String(reason)}`)
     }
@@ -304,20 +294,35 @@ export default function MedicalGasConverter({
     const extension = file.name.split('.').pop()?.toLowerCase()
     try {
       if (['png', 'jpg', 'jpeg'].includes(extension || '')) {
+        pdfRoutesRef.current = []
         setPlanImage(file, file.name)
         return
       }
       if (extension === 'pdf') {
         setPlanName(file.name)
-        setNotice('Membuka halaman pertama PDF…')
+        pdfRoutesRef.current = []
+        setNotice('Memindai jalur dan label lantai pada semua halaman PDF…')
         const pdfjs = await loadPdfJs()
         const documentTask = pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) })
         const doc = await documentTask.promise
-        setNotice('')
+        const detected = await extractPdfDocumentRoutes(pdfjs, doc, (page, total) => setNotice(`Memindai halaman ${page} dari ${total}…`))
+        pdfRoutesRef.current = detected.routes.map((route, index) => ({
+          id: crypto.randomUUID(),
+          label: `${route.floorLabel} · ${route.gas || 'Jalur warna lain'} · ${index + 1}`,
+          layer: `PDF · ${route.floorLabel}`,
+          sourceColor: route.color,
+          gas: route.gas,
+          floorIndex: route.floorIndex,
+          floorLabel: route.floorLabel,
+          sourcePage: route.pageNumber,
+          points: route.points,
+          verified: false,
+        }))
         await renderPdfPage(doc, 1)
         return
       }
       if (extension === 'dxf') {
+        pdfRoutesRef.current = []
         const dxf = parseDxfEntities(await file.text())
         setPlanName(file.name)
         setPlanAspect(dxf.aspect)
@@ -402,7 +407,7 @@ export default function MedicalGasConverter({
       <label className="primary medical-plan-upload"><FileUp size={15}/> Unggah denah<input type="file" accept=".pdf,.png,.jpg,.jpeg,.dxf,application/pdf,image/png,image/jpeg" onChange={event => { void handleFile(event.currentTarget.files?.[0]); event.currentTarget.value = '' }}/></label>
     </div>
 
-    <div className="medical-converter-guidance"><AlertTriangle size={16}/><span>PDF vektor dapat dipindai otomatis menjadi kandidat jalur 3D. Konfirmasi jenis gas dan verifikasi posisi sebelum ekspor; warna, diameter, skala, dan elevasi tidak diasumsikan sebagai data aktual.</span></div>
+    <div className="medical-converter-guidance"><AlertTriangle size={16}/><span>Pemetaan PDF otomatis: hijau = Oxygen, biru = N₂O, kuning = Medical Air/Compressed Air, hitam = Vacuum. Semua halaman digabung ke satu model dengan lantai bertingkat; warna lain yang terdeteksi ditandai untuk tinjauan.</span></div>
     {error && <div className="medical-converter-alert error" role="alert"><AlertTriangle size={15}/><span>{error}</span><button onClick={() => setError('')} aria-label="Tutup">×</button></div>}
     {notice && <div className="medical-converter-alert info" role="status"><Check size={15}/><span>{notice}</span><button onClick={() => setNotice('')} aria-label="Tutup">×</button></div>}
 
@@ -416,7 +421,7 @@ export default function MedicalGasConverter({
         </div></div>
         <div className="medical-trace-toolbar">
           <label>Jenis gas untuk trace<select value={gasForTrace} onChange={event => setGasForTrace(event.target.value as GasType | '')}><option value="">Pilih dari legend…</option>{GAS_TYPES.map(gas => <option key={gas} value={gas}>{GAS_LABELS[gas]}</option>)}</select></label>
-          <small>PDF vektor dan DXF dipindai otomatis; PNG/JPG atau PDF raster masih memerlukan trace manual. Semua kandidat perlu verifikasi.</small>
+          <small>PDF vektor dipindai otomatis per halaman dan dibedakan berdasarkan warna gas; garis lain yang terdeteksi tetap perlu tinjauan.</small>
         </div>
         {notice.includes('Membuka halaman') ? <div className="medical-plan-loading">{notice}</div> : <PlanCanvas size={size} imageUrl={imageUrl} dxfBackground={dxfBackground} routes={routes} draft={draft} settings={settings} drawing={drawing} onPoint={addDraftPoint} onFinish={finishRoute}/>}
         <div className="medical-plan-footer"><span>Posisi jalur ditransformasikan proporsional dari denah; tidak mengklaim dimensi aktual.</span></div>
@@ -424,8 +429,8 @@ export default function MedicalGasConverter({
 
       <section className="panel medical-scene-panel">
         <div className="medical-panel-head"><div><h2>Isolated 3D Piping</h2><p>Jaringan pipa saja · tanpa dinding, ruang, atau peralatan.</p></div><div className="medical-export-buttons"><button className="secondary" onClick={saveScenePng} title="Export PNG"><Camera size={14}/>PNG</button><button className="secondary" onClick={() => void exportObj()}>OBJ</button><button className="primary" onClick={() => void exportGlb()}>GLB</button></div></div>
-        <div className="medical-view-presets">{(['isometric','top','front','side'] as const).map(preset => <button key={preset} className={view === preset ? 'selected' : ''} onClick={() => setView(preset)}>{preset === 'isometric' ? 'Isometric' : preset === 'top' ? 'Top' : preset === 'front' ? 'Front' : 'Side'}</button>)}<button onClick={() => zoomScene(0.82)} title="Zoom in"><Plus size={13}/></button><button onClick={() => zoomScene(1.22)} title="Zoom out"><Minus size={13}/></button><button className="view-help" title="Drag untuk orbit; scroll untuk zoom; right-click/shift+drag untuk pan."><Maximize2 size={13}/></button></div>
-        <GasPipeScene routes={routes} settings={settings} view={view} planAspect={planAspect} onApi={setSceneApi}/>
+        <div className="medical-view-presets">{(['isometric','top','front','side'] as const).map(preset => <button key={preset} className={view === preset ? 'selected' : ''} onClick={() => setView(preset)}>{preset === 'isometric' ? 'Isometric' : preset === 'top' ? 'Top' : preset === 'front' ? 'Front' : 'Side'}</button>)}<button onClick={() => zoomScene(0.82)} title="Zoom in"><Plus size={13}/></button><button onClick={() => zoomScene(1.22)} title="Zoom out"><Minus size={13}/></button><button className="view-help" title="Drag untuk orbit; scroll untuk zoom; right-click/shift+drag untuk pan."><Maximize2 size={13}/></button><label className="floor-step-control">Jarak lantai (visual)<input type="number" min="1" max="10" step="0.1" value={floorStep} onChange={event => setFloorStep(Math.max(1, Number(event.target.value) || 1))}/></label></div>
+        <GasPipeScene routes={routes} settings={settings} view={view} planAspect={planAspect} floorStep={floorStep} onApi={setSceneApi}/>
         <div className="medical-gas-legend">{GAS_TYPES.map(gas => <div className="medical-gas-setting" key={gas}>
           <label className="gas-visible"><input type="checkbox" checked={settings[gas].visible} onChange={event => updateGasSetting(gas, { visible: event.target.checked })}/><span>{settings[gas].visible ? <Eye size={13}/> : <EyeOff size={13}/>}</span><strong>{GAS_LABELS[gas]}</strong></label>
           <label className="gas-color-label">Legend color<input type="color" value={settings[gas].color} onChange={event => updateGasSetting(gas, { color: event.target.value })}/></label>

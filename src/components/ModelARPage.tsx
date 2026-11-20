@@ -9,7 +9,7 @@ import { formatPercent } from '../utils/format'
 function userError(reason: unknown) {
   const message = reason instanceof Error ? reason.message : String(reason)
   if (/relation .* does not exist|could not find the table/i.test(message)) return 'Tabel BIM belum tersedia. Review dan jalankan migrasi supabase/migrations/20261119000000_bim_models_and_wbs_mappings.sql.'
-  if (/bucket not found|no such bucket/i.test(message)) return 'Bucket privat project-models belum tersedia. Review dan jalankan migrasi BIM.'
+  if (/bucket not found|no such bucket/i.test(message)) return 'Bucket project-models belum tersedia di Supabase yang digunakan website online. Jalankan migrasi BIM pada project Supabase yang sama dengan konfigurasi website; frontend tidak dapat membuat bucket privat.'
   if (/permission|policy|row-level|403|42501/i.test(message)) return 'Akses model ditolak. Periksa RLS metadata/Storage dan project aktif.'
   return message
 }
